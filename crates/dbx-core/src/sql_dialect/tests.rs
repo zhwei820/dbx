@@ -492,7 +492,7 @@ fn builds_table_data_where_and_schema_queries() {
             include_row_id: false,
             ..Default::default()
         }),
-        "SELECT `id` AS `id`, `name` AS `name` FROM `dbx_demo`.`connection_test` ORDER BY 1 LIMIT 2 OFFSET 1;"
+        "SELECT `id` AS `id`, `name` AS `name` FROM `dbx_demo`.`connection_test` ORDER BY `id` DESC LIMIT 2 OFFSET 1;"
     );
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -755,7 +755,7 @@ fn builds_table_data_where_and_schema_queries() {
                 include_row_id: false,
                 ..Default::default()
             }),
-            "SELECT \"ID\", \"AMOUNT\" FROM (SELECT dbx_t.\"ID\", dbx_t.\"AMOUNT\", ROW_NUMBER() OVER () AS \"__dbx_row_num\" FROM \"DB2INST1\".\"ORDERS\" dbx_t WHERE (amount > 10)) dbx_page WHERE \"__dbx_row_num\" > 100 AND \"__dbx_row_num\" <= 150 ORDER BY \"__dbx_row_num\""
+            "SELECT \"ID\", \"AMOUNT\" FROM (SELECT dbx_t.\"ID\", dbx_t.\"AMOUNT\", ROW_NUMBER() OVER (ORDER BY \"ID\" DESC) AS \"__dbx_row_num\" FROM \"DB2INST1\".\"ORDERS\" dbx_t WHERE (amount > 10)) dbx_page WHERE \"__dbx_row_num\" > 100 AND \"__dbx_row_num\" <= 150 ORDER BY \"__dbx_row_num\""
         );
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -1003,7 +1003,7 @@ fn table_data_preview_requires_stable_keys_and_parallel_types() {
             column_types: Vec::new(),
             ..base.clone()
         }),
-        "SELECT * FROM \"large_rows\" LIMIT 100;"
+        "SELECT * FROM \"large_rows\" ORDER BY \"id\" DESC LIMIT 100;"
     );
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -1034,7 +1034,7 @@ fn builds_informix_table_data_with_skip_first_pagination() {
             include_row_id: false,
             ..Default::default()
         }),
-        "SELECT SKIP 100 FIRST 50 * FROM xtdpcky.users WHERE (active = 1)"
+        "SELECT SKIP 100 FIRST 50 * FROM xtdpcky.users WHERE (active = 1) ORDER BY id DESC"
     );
 
     assert_eq!(
@@ -1195,7 +1195,7 @@ fn builds_table_data_special_column_queries() {
             include_row_id: false,
             ..Default::default()
         }),
-        "SELECT `id` AS `id`, `name` AS `name` FROM `departments` LIMIT 100;"
+        "SELECT `id` AS `id`, `name` AS `name` FROM `departments` ORDER BY `id` DESC LIMIT 100;"
     );
 }
 
@@ -1275,7 +1275,7 @@ fn builds_oracle_and_neo4j_table_data_queries() {
             include_row_id: true,
             ..Default::default()
         }),
-        "SELECT \"__DBX_ROWID\", \"ID\", \"NAME\" FROM (SELECT ROWIDTOCHAR(t.ROWID) AS \"__DBX_ROWID\", t.* FROM \"DBXTEST\".\"DBX_LOAD_TABLE_006\" t) WHERE ROWNUM <= 100"
+        "SELECT \"__DBX_ROWID\", \"ID\", \"NAME\" FROM (SELECT ROWIDTOCHAR(t.ROWID) AS \"__DBX_ROWID\", t.* FROM \"DBXTEST\".\"DBX_LOAD_TABLE_006\" t ORDER BY \"ID\" DESC) WHERE ROWNUM <= 100"
     );
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -1293,7 +1293,7 @@ fn builds_oracle_and_neo4j_table_data_queries() {
             include_row_id: true,
             ..Default::default()
         }),
-        "SELECT \"__DBX_ROWID\", \"ID\", \"SMC_RESPONSE\" FROM (SELECT ROWIDTOCHAR(t.ROWID) AS \"__DBX_ROWID\", t.* FROM \"APP\".\"DATA_REPORT_SUB_TASK\" t) WHERE ROWNUM <= 100"
+        "SELECT \"__DBX_ROWID\", \"ID\", \"SMC_RESPONSE\" FROM (SELECT ROWIDTOCHAR(t.ROWID) AS \"__DBX_ROWID\", t.* FROM \"APP\".\"DATA_REPORT_SUB_TASK\" t ORDER BY \"ID\" DESC) WHERE ROWNUM <= 100"
     );
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -1311,7 +1311,7 @@ fn builds_oracle_and_neo4j_table_data_queries() {
             include_row_id: true,
             ..Default::default()
         }),
-        "SELECT \"ID\", \"NAME\" FROM \"DBXTEST\".\"DBX_JOIN_VIEW\""
+        "SELECT \"ID\", \"NAME\" FROM \"DBXTEST\".\"DBX_JOIN_VIEW\" ORDER BY \"ID\" DESC"
     );
     assert_eq!(
             build_table_data_select_sql(TableDataSelectSqlOptions {
@@ -1422,7 +1422,7 @@ fn oracle_view_later_pages_keep_rownum_pagination() {
             include_row_id: true,
             ..Default::default()
         }),
-        "SELECT \"ID\", \"NAME\" FROM (SELECT dbx_inner.*, ROWNUM AS \"__dbx_row_num\" FROM (SELECT \"ID\", \"NAME\" FROM \"DBXTEST\".\"DBX_JOIN_VIEW\") dbx_inner WHERE ROWNUM <= 200) WHERE \"__dbx_row_num\" > 100"
+        "SELECT \"ID\", \"NAME\" FROM (SELECT dbx_inner.*, ROWNUM AS \"__dbx_row_num\" FROM (SELECT \"ID\", \"NAME\" FROM \"DBXTEST\".\"DBX_JOIN_VIEW\" ORDER BY \"ID\" DESC) dbx_inner WHERE ROWNUM <= 200) WHERE \"__dbx_row_num\" > 100"
     );
 }
 
