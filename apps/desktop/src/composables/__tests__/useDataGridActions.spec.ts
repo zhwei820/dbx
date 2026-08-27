@@ -195,6 +195,23 @@ describe("useDataGridActions", () => {
     expect(mocks.executeTabSql).toHaveBeenCalledWith("tab-1", "SELECT * FROM public.users LIMIT 100 OFFSET 100", expect.objectContaining({ appendResult: { maxRows: 10_000 } }));
   });
 
+  it("uses a previously successful id result only as a fallback order column", async () => {
+    const tab = tableDataTab({
+      tableMeta: { schema: "public", tableName: "users", tableType: "TABLE", columns: [], primaryKeys: [] },
+      result: { columns: ["id", "name"], rows: [[1, "Ada"]], affected_rows: 0, execution_time_ms: 1 },
+    });
+    const actions = useDataGridActions(computed(() => tab));
+
+    await actions.onPaginate(100, 100);
+
+    expect(mocks.buildTableSelectSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        columns: undefined,
+        fallbackOrderColumns: ["id", "name"],
+      }),
+    );
+  });
+
   it("ignores a stale structured order when its column was renamed", async () => {
     const tab = tableDataTab({
       resultSortColumn: "old_name",
@@ -321,7 +338,7 @@ describe("useDataGridActions", () => {
     await actions.onReloadData(tab.sql, "", "", "", undefined, undefined, "refresh");
 
     // 合成的 ["Error"] 结果列不得进入 SQL 投影：真实列缺失时省略 columns（SELECT *）
-    expect(mocks.buildTableSelectSql).toHaveBeenCalledWith(expect.objectContaining({ columns: undefined }));
+    expect(mocks.buildTableSelectSql).toHaveBeenCalledWith(expect.objectContaining({ columns: undefined, fallbackOrderColumns: undefined }));
     await vi.waitFor(() => {
       expect(mocks.getColumns).toHaveBeenCalled();
       expect(mocks.setTableMeta).toHaveBeenCalledWith("tab-1", expect.objectContaining({ primaryKeys: ["id"] }));

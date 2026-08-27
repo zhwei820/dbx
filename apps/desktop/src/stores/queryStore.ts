@@ -38,7 +38,7 @@ import { usesAgentCursorForQuery } from "@/lib/database/databaseDriverManifest";
 import { defaultAutoCommitForDbType, supportsClearableQuerySchema, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
 import { canInsertTableRows, canUseKeylessRowPredicate, DBX_ROWID_COLUMN, editablePrimaryKeys, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
 import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/table/tableDataExport";
-import { tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
+import { tableDataFallbackOrderColumns, tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
 import { isDataTabMetadataLifecycleStale } from "@/lib/sidebar/dataTabOpenPolicy";
 import { dataTabExecutionDatabase } from "@/lib/table/dataTabExecutionDatabase";
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
@@ -3106,6 +3106,7 @@ export const useQueryStore = defineStore("query", () => {
 
       clearInvalidDataTabSortState(tab, tableMeta.columns);
       const primaryKeys = tab.tableMeta ? tab.tableMeta.primaryKeys : tableMeta.primaryKeys;
+      const realColumns = tab.tableMeta?.columns.length ? tab.tableMeta.columns : undefined;
       const sortOrder = tab.resultSortColumn && tab.resultSortDirection ? `${quoteTableDataIdentifier(effectiveDbType, tab.resultSortColumn, identifierQuote)} ${tab.resultSortDirection.toUpperCase()}` : undefined;
       const orderBy = tab.orderByInput?.trim() || sortOrder;
       const limit = tab.resultPageLimit ?? tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize);
@@ -3121,9 +3122,10 @@ export const useQueryStore = defineStore("query", () => {
         tableName: tableMeta.tableName,
         tableType: tableMeta.tableType,
         catalog: tableMeta.catalog,
-        columns: tableMeta.columns.map((column) => column.name),
+        columns: realColumns?.map((column) => column.name),
+        fallbackOrderColumns: realColumns ? undefined : tableDataFallbackOrderColumns(tab),
         primaryKeys,
-        ...tableDataLargeValuePreviewOptions(effectiveDbType, tableMeta.columns, primaryKeys, limit),
+        ...tableDataLargeValuePreviewOptions(effectiveDbType, realColumns ?? [], primaryKeys, limit),
         includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
         includeRowId: usesSyntheticRowIdKey(effectiveDbType, primaryKeys, tableMeta.tableType),
         whereInput: tab.whereInput,
@@ -6464,6 +6466,7 @@ export const useQueryStore = defineStore("query", () => {
       const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
       const identifierQuote = connStore.connectionIdentifierQuote?.(tab.connectionId);
       const primaryKeys = tab.tableMeta ? tab.tableMeta.primaryKeys : tableMeta.primaryKeys;
+      const realColumns = tab.tableMeta?.columns.length ? tab.tableMeta.columns : undefined;
       const sortOrder = tab.resultSortColumn && tab.resultSortDirection ? `${quoteTableDataIdentifier(effectiveDbType, tab.resultSortColumn, identifierQuote)} ${tab.resultSortDirection.toUpperCase()}` : undefined;
       const orderBy = tab.orderByInput?.trim() || sortOrder;
       const queryTimeoutSecs = queryTimeoutSecsForConnection(conn, settingsStore.editorSettings.globalQueryTimeoutSecs);
@@ -6486,7 +6489,8 @@ export const useQueryStore = defineStore("query", () => {
             tableName: tableMeta.tableName,
             tableType: tableMeta.tableType,
             catalog: tableMeta.catalog,
-            columns: tableMeta.columns.map((column) => column.name),
+            columns: realColumns?.map((column) => column.name),
+            fallbackOrderColumns: realColumns ? undefined : tableDataFallbackOrderColumns(tab),
             primaryKeys,
             whereInput: tab.whereInput,
             orderBy,

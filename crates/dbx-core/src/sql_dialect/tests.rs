@@ -1393,6 +1393,35 @@ fn table_data_defaults_to_id_desc_when_id_column_exists() {
 }
 
 #[test]
+fn table_data_defaults_to_confirmed_result_id_when_metadata_is_missing() {
+    assert_eq!(
+        build_table_data_select_sql(TableDataSelectSqlOptions {
+            database_type: Some(DatabaseType::Mysql),
+            table_name: "users".to_string(),
+            fallback_order_columns: vec!["name".to_string(), "ID".to_string()],
+            limit: Some(100),
+            ..Default::default()
+        }),
+        "SELECT * FROM `users` ORDER BY `ID` DESC LIMIT 100;"
+    );
+}
+
+#[test]
+fn authoritative_table_columns_override_stale_result_order_columns() {
+    assert_eq!(
+        build_table_data_select_sql(TableDataSelectSqlOptions {
+            database_type: Some(DatabaseType::Mysql),
+            table_name: "users".to_string(),
+            columns: vec!["name".to_string()],
+            fallback_order_columns: vec!["id".to_string()],
+            limit: Some(100),
+            ..Default::default()
+        }),
+        "SELECT `name` FROM `users` LIMIT 100;"
+    );
+}
+
+#[test]
 fn explicit_table_data_order_overrides_default_id_order() {
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {

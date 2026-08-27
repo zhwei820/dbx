@@ -7,7 +7,7 @@ import { buildTableSelectSql, quoteTableDataIdentifier } from "@/lib/table/table
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { tableDataLargeValuePreviewOptions } from "@/lib/dataGrid/dataGridLargeValues";
 import { usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
-import { tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
+import { tableDataFallbackOrderColumns, tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
 import * as api from "@/lib/backend/api";
 import type { QueryTab } from "@/types/database";
 import { useToast } from "@/composables/useToast";
@@ -78,6 +78,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       tableType: tableMeta?.tableType,
       catalog: tableMeta?.catalog,
       columns: realColumns?.map((column) => column.name),
+      fallbackOrderColumns: realColumns ? undefined : tableDataFallbackOrderColumns(tab),
       primaryKeys,
       ...tableDataLargeValuePreviewOptions(effectiveDbType, realColumns ?? [], primaryKeys, limit),
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,

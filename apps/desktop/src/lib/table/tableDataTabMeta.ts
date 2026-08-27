@@ -1,4 +1,5 @@
 import type { QueryTab, ColumnInfo } from "@/types/database";
+import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
 
 export type DataTabTableMeta = NonNullable<QueryTab["tableMeta"]>;
 
@@ -40,4 +41,14 @@ export function tableMetaForDataTab(tab: QueryTab | undefined): DataTabTableMeta
     columns: (tab.result?.columns ?? []).map(fallbackColumnInfo),
     primaryKeys: tab.tableMeta?.primaryKeys ?? [],
   };
+}
+
+/**
+ * Columns observed in a successful table-data result are safe evidence for
+ * choosing a default order, but not authoritative enough to replace metadata
+ * in an explicit SELECT projection.
+ */
+export function tableDataFallbackOrderColumns(tab: QueryTab | undefined): string[] | undefined {
+  if (!tab || tab.mode !== "data" || !tab.result || isQueryExecutionErrorResult(tab.result)) return undefined;
+  return tab.result.columns.length > 0 ? tab.result.columns : undefined;
 }

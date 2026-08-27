@@ -238,8 +238,13 @@ pub fn build_table_data_select_sql_with_database(
     };
     let predicate = normalize_where_input(options.where_input.as_deref());
     let where_clause = if predicate.is_empty() { String::new() } else { format!(" WHERE ({predicate})") };
-    let id_order_by = options
-        .columns
+    // Prefer authoritative table metadata. When it is not available yet, a
+    // caller may pass columns confirmed by an earlier successful table-data
+    // result. Keep those fallback columns out of the SELECT projection: they
+    // are only evidence that a safe default order column exists.
+    let known_order_columns =
+        if options.columns.is_empty() { &options.fallback_order_columns } else { &options.columns };
+    let id_order_by = known_order_columns
         .iter()
         .find(|column| column.eq_ignore_ascii_case("id"))
         .map(|column| {
