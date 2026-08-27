@@ -1023,6 +1023,24 @@ export async function saveConnectionDatabaseInfo(connectionId: string, databaseI
   });
 }
 
+export interface WriteUnlockState {
+  remainingMs: number;
+}
+
+export async function unlockConnectionWrites(connectionId: string, durationSecs: number): Promise<number> {
+  const state = await invokeBackend<WriteUnlockState>("unlock_connection_writes", { connectionId, durationSecs });
+  return state.remainingMs;
+}
+
+export async function lockConnectionWrites(connectionId: string): Promise<void> {
+  return invokeBackend("lock_connection_writes", { connectionId });
+}
+
+export async function connectionWriteUnlockState(connectionId: string): Promise<number> {
+  const state = await invokeBackend<WriteUnlockState>("connection_write_unlock_state", { connectionId });
+  return state.remainingMs;
+}
+
 export async function connectionFinalProxyPort(config: ConnectionConfig): Promise<number> {
   return invokeBackend("connection_final_proxy_port", { config });
 }
@@ -4477,7 +4495,7 @@ export async function sortTablesByFkDependency(options: SortTablesByFkOptions): 
 export type TableImportMode = "append" | "truncate";
 export type TableImportStatus = "running" | "done" | "error" | "cancelled";
 export type TableImportPhase = "preparing" | "detectingEncoding" | "reading" | "writing" | "finalizing" | "done";
-export type TableImportSourceFormat = "csv" | "tsv" | "delimited" | "json" | "excel";
+export type TableImportSourceFormat = "csv" | "tsv" | "delimited" | "json" | "excel" | "sql";
 export type TableImportJsonShape = "auto" | "objects" | "arrays";
 export type TableImportTextEncoding = "auto" | "utf8" | "gbk" | "utf16Le" | "utf16Be";
 
@@ -4499,6 +4517,7 @@ export interface TableImportParseOptions {
   sheetName?: string | null;
   sheetIndex?: number | null;
   jsonShape?: TableImportJsonShape | null;
+  sqlDialect?: DatabaseType | null;
 }
 
 export interface TableImportPreviewRequest {
