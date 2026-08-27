@@ -81,7 +81,7 @@ import { useSavedSqlStore } from "@/stores/savedSqlStore";
 // --- Drag and Drop ---
 import { useDragSort } from "@/composables/useDragSort";
 import { sidebarTreeRuntimeKey } from "@/lib/sidebar/sidebarTreeRuntime";
-import { treeNodePinKey } from "@/lib/app/pinnedItems";
+import { isSidebarDatabaseTreeNode, treeNodePinKey } from "@/lib/app/pinnedItems";
 import { isTreeGroupNodeType } from "@/lib/sidebar/treeNodeGroup";
 import { customTypeCapabilities } from "@/lib/database/databaseObjectCapabilities";
 import { shouldActivateTreeNodeOnSingleClick, shouldOpenObjectBrowserOnSingleClick } from "@/lib/sidebar/treeNodeClick";
@@ -1052,7 +1052,7 @@ function pinnedSortKey(): string {
 }
 
 function canDragPinnedOrder(): boolean {
-  return isPinned.value && !isNodeDefaultDatabase.value && !props.reorderDisabled;
+  return isPinned.value && !isNodeDefaultDatabase.value && !isSidebarDatabaseTreeNode(activeNode.value) && !props.reorderDisabled;
 }
 
 const {

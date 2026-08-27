@@ -68,6 +68,27 @@ describe("connectionStore pinned tree node removal", () => {
     expect(store.isTreeNodePinned(replacement)).toBe(false);
   });
 
+  it("alphabetizes pinned databases and disables manual reordering for them", async () => {
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    const databaseB: TreeNode = { id: "conn:database-b", label: "Database B", type: "database", connectionId: "conn", database: "database-b" };
+    const databaseA: TreeNode = { id: "conn:database-a", label: "Database A", type: "database", connectionId: "conn", database: "database-a" };
+    const connection: TreeNode = { id: "conn", label: "Connection", type: "connection", connectionId: "conn", children: [databaseB, databaseA] };
+    store.treeNodes = [connection];
+
+    store.toggleTreeNodePin(databaseB);
+    store.toggleTreeNodePin(databaseA);
+
+    expect(connection.children?.map((node) => node.id)).toEqual([databaseA.id, databaseB.id]);
+    const databaseAKey = treeNodePinKey(databaseA);
+    const databaseBKey = treeNodePinKey(databaseB);
+    store.beginPinnedTreeNodeReorder(databaseAKey);
+    expect(store.isPinnedTreeNodeReorderTarget(databaseBKey)).toBe(false);
+    expect(store.reorderPinnedTreeNodes(databaseAKey, databaseBKey, "after")).toBe(false);
+  });
+
   it("removes pins and selection state for a deleted group and all of its nested groups", async () => {
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({ saveSidebarLayout: vi.fn().mockResolvedValue(undefined) }));

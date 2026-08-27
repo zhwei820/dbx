@@ -25,6 +25,7 @@ import type {
 } from "@/types/database";
 import {
   inheritNaturalTreeNodeOrder,
+  isSidebarDatabaseTreeNode,
   migrateLegacyPinnedTreeNodeOrder,
   normalizePinnedTreeNodeOrder,
   orderItemsByPinnedTreeNodeOrder,
@@ -2969,8 +2970,9 @@ export const useConnectionStore = defineStore("connection", () => {
     const wasPinned = pinnedTreeNodeIds.value.has(pinKey) || pinnedTreeNodeIds.value.has(node.id);
     // Remove the legacy bare id as part of every toggle so old ambiguous pins
     // cannot continue matching objects in a different database. Newly pinned
-    // nodes append to the persisted order, placing them last in their sibling
-    // pin section until the user explicitly reorders them.
+    // nodes append to the persisted order. Database pins are presented
+    // alphabetically; other node types stay last in their sibling pin section
+    // until the user explicitly reorders them.
     const next = pinnedTreeNodeOrder.value.filter((id) => id !== node.id && id !== pinKey);
     if (!wasPinned) next.push(pinKey);
     setPinnedTreeNodeOrder(next);
@@ -2998,12 +3000,12 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function collectPinnedTreeNodeReorderTargets(draggedKey: string): Set<string> {
     const dragged = findPinnedTreeNodeLocation(treeNodes.value, draggedKey);
-    if (!dragged || !isTreeNodePinned(dragged.node) || isFixedPriorityTreeNode(dragged.node)) return new Set();
+    if (!dragged || !isTreeNodePinned(dragged.node) || isFixedPriorityTreeNode(dragged.node) || isSidebarDatabaseTreeNode(dragged.node)) return new Set();
 
     const targets = new Set<string>();
     for (const sibling of dragged.siblings) {
       const siblingKey = treeNodePinKey(sibling);
-      if (siblingKey === draggedKey || !isTreeNodePinned(sibling) || isFixedPriorityTreeNode(sibling)) continue;
+      if (siblingKey === draggedKey || !isTreeNodePinned(sibling) || isFixedPriorityTreeNode(sibling) || isSidebarDatabaseTreeNode(sibling)) continue;
       targets.add(siblingKey);
     }
     return targets;

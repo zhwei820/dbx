@@ -191,16 +191,29 @@ describe("sidebar pinned tree nodes", () => {
     expect(migrated.ids).toEqual(new Set([treeNodePinKey(tableA)]));
   });
 
-  it("uses the persisted order for pinned siblings", () => {
-    const nodeA: TreeNode = { id: "db-a", label: "A", type: "database", connectionId: "conn", database: "a" };
-    const nodeB: TreeNode = { id: "db-b", label: "B", type: "database", connectionId: "conn", database: "b" };
-    const nodeC: TreeNode = { id: "db-c", label: "C", type: "database", connectionId: "conn", database: "c" };
+  it("uses the persisted order for non-database pinned siblings", () => {
+    const nodeA: TreeNode = { id: "table-a", label: "A", type: "table", connectionId: "conn", database: "db" };
+    const nodeB: TreeNode = { id: "table-b", label: "B", type: "table", connectionId: "conn", database: "db" };
+    const nodeC: TreeNode = { id: "table-c", label: "C", type: "table", connectionId: "conn", database: "db" };
     const nodes = [nodeA, nodeB, nodeC];
     const order = [treeNodePinKey(nodeC), treeNodePinKey(nodeA)];
 
     syncPinnedTreeNodeStateInPlace(nodes, new Set(order), order);
 
-    expect(nodes.map((node) => node.id)).toEqual(["db-c", "db-a", "db-b"]);
+    expect(nodes.map((node) => node.id)).toEqual(["table-c", "table-a", "table-b"]);
+  });
+
+  it.each(["database", "redis-db", "mongo-db", "vector-database"] as const)("sorts pinned %s siblings alphabetically", (type) => {
+    const node10: TreeNode = { id: "db-10", label: "Database 10", type, connectionId: "conn", database: "database-10" };
+    const node2: TreeNode = { id: "db-2", label: "database 2", type, connectionId: "conn", database: "database-2" };
+    const archive: TreeNode = { id: "db-archive", label: "Archive", type, connectionId: "conn", database: "archive" };
+    const unpinned: TreeNode = { id: "db-other", label: "Other", type, connectionId: "conn", database: "other" };
+    const nodes = [node10, node2, archive, unpinned];
+    const order = [treeNodePinKey(node10), treeNodePinKey(archive), treeNodePinKey(node2)];
+
+    syncPinnedTreeNodeStateInPlace(nodes, new Set(order), order);
+
+    expect(nodes.map((node) => node.id)).toEqual(["db-archive", "db-2", "db-10", "db-other"]);
   });
 
   it("keeps the fixed default database before manually pinned siblings", () => {
@@ -212,7 +225,7 @@ describe("sidebar pinned tree nodes", () => {
 
     syncPinnedTreeNodeStateInPlace(nodes, new Set(order), order, (node) => node.id === defaultNode.id);
 
-    expect(nodes.map((node) => node.id)).toEqual(["db-default", "db-c", "db-a"]);
+    expect(nodes.map((node) => node.id)).toEqual(["db-default", "db-a", "db-c"]);
     expect(defaultNode.pinned).toBe(false);
   });
 
@@ -225,7 +238,7 @@ describe("sidebar pinned tree nodes", () => {
 
     syncPinnedTreeNodeStateInPlace(nodes, new Set(order), order, (node) => node.id === defaultNode.id);
 
-    expect(nodes.map((node) => node.id)).toEqual(["db-default", "db-c", "db-a"]);
+    expect(nodes.map((node) => node.id)).toEqual(["db-default", "db-a", "db-c"]);
     expect(defaultNode.pinned).toBe(true);
   });
 
@@ -240,7 +253,7 @@ describe("sidebar pinned tree nodes", () => {
     expect(after.filter((key) => key.startsWith("other:"))).toEqual(["other:x", "other:y"]);
   });
 
-  it("places a newly appended pin last within its sibling pin section", () => {
+  it("alphabetizes a newly appended database pin within its sibling pin section", () => {
     const nodeA: TreeNode = { id: "db-a", label: "A", type: "database", connectionId: "conn", database: "a" };
     const nodeB: TreeNode = { id: "db-b", label: "B", type: "database", connectionId: "conn", database: "b" };
     const nodeC: TreeNode = { id: "db-c", label: "C", type: "database", connectionId: "conn", database: "c" };
@@ -249,7 +262,7 @@ describe("sidebar pinned tree nodes", () => {
 
     syncPinnedTreeNodeStateInPlace(nodes, new Set(order), order);
 
-    expect(nodes.map((node) => node.id)).toEqual(["db-c", "db-a", "db-b"]);
+    expect(nodes.map((node) => node.id)).toEqual(["db-a", "db-b", "db-c"]);
   });
 
   it("migrates a legacy pin key in place without changing persisted order", () => {

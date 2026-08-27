@@ -1,4 +1,5 @@
 import type { TreeNode } from "@/types/database";
+import { compareSidebarNames } from "@/lib/database/databaseTree";
 
 export type PinnedTreeNodeUpdateScope = "missing" | "root" | "siblings";
 export type PinnedTreeNodeDropPosition = "before" | "after";
@@ -17,6 +18,12 @@ export type PinnedTreeNodeIdentity = {
 
 const NATURAL_TREE_NODE_ORDER = Symbol("naturalTreeNodeOrder");
 type OrderedTreeNode = TreeNode & { [NATURAL_TREE_NODE_ORDER]?: number };
+
+const SIDEBAR_DATABASE_NODE_TYPES = new Set<TreeNode["type"]>(["database", "redis-db", "mongo-db", "vector-database"]);
+
+export function isSidebarDatabaseTreeNode(node: Pick<TreeNode, "type">): boolean {
+  return SIDEBAR_DATABASE_NODE_TYPES.has(node.type);
+}
 
 function naturalTreeNodeOrder(node: TreeNode): number | undefined {
   return (node as OrderedTreeNode)[NATURAL_TREE_NODE_ORDER];
@@ -279,8 +286,16 @@ export function orderPinnedTreeNodes(nodes: TreeNode[], pinnedOrder: readonly st
     if (rightRank !== undefined) return 1;
     return naturalOrder(left, right);
   });
+  // Database lists are alphabetical before pinning and should remain easy to
+  // scan after several databases are promoted. Keep non-database pins in their
+  // persisted slots so their existing manual ordering remains unchanged.
+  const alphabeticalDatabases = pinned
+    .filter(isSidebarDatabaseTreeNode)
+    .sort((left, right) => compareSidebarNames(left.label, right.label) || naturalOrder(left, right));
+  let databaseIndex = 0;
+  const orderedPinned = pinned.map((node) => (isSidebarDatabaseTreeNode(node) ? alphabeticalDatabases[databaseIndex++]! : node));
   unpinned.sort(naturalOrder);
-  return [...fixed, ...pinned, ...unpinned];
+  return [...fixed, ...orderedPinned, ...unpinned];
 }
 
 function findTreeNodeLocation(nodes: TreeNode[], target: TreeNode, parent: TreeNode | null = null): { node: TreeNode; parent: TreeNode | null } | null {
