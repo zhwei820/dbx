@@ -62,10 +62,12 @@ import { buildTabResultSnapshot, deleteTabResultSnapshot, pruneTabResultSnapshot
 import { estimateQueryResultsBytes, selectInactiveResultEvictions } from "@/lib/tabs/queryResultSize";
 import { queryResultBaseSql, queryResultExecutionSql, resultGridInstanceKey } from "@/lib/tabs/tabPresentation";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
+import { classifySqlActivityKind, primarySqlOperation } from "@/lib/history/historyActivityKind";
 import { batchSqlRecoverySql, batchSqlRecoveryState, mergeBatchQueryResults, offsetBatchQueryResultIndexes, prepareBatchSqlRecovery, type BatchSqlRecoveryAction } from "@/lib/query/batchSqlRecovery";
 import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryResultArchive } from "@/lib/query/queryResultArchive";
 import * as api from "@/lib/backend/api";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useHistoryStore } from "@/stores/historyStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { useExportTracker } from "@/composables/useExportTracker";
@@ -3662,6 +3664,39 @@ export const useQueryStore = defineStore("query", () => {
     });
   }
 
+  /**
+   * Record a table-data read (open table, refresh, paging, sort, WHERE filter)
+   * in the query history.
+   *
+   * Query tabs are recorded by the editor execution path
+   * (`useSqlExecution.doExecute`), which data tabs never go through: they build
+   * their SELECT and call `executeTabSql` directly from several entry points
+   * (`refreshDataTabInternal`, `useDataGridActions.onReloadData`,
+   * `useNavigationTargets.openTableTarget`, the grid's WHERE search). Recording
+   * inside the shared execution funnel therefore covers all of them at once,
+   * and gating on `mode === "data"` keeps query tabs from being recorded twice.
+   *
+   * Fire-and-forget on purpose: a history write must never delay or fail a
+   * completed query, matching how the editor path calls `historyStore.add`.
+   */
+  function recordDataTabHistory(tab: QueryTab, sql: string, failureMessage: string | undefined, elapsedMs: number) {
+    const tableMeta = tableMetaForDataTab(tab);
+    void useHistoryStore()
+      .add({
+        connection_id: tab.connectionId,
+        connection_name: useConnectionStore().getConfig(tab.connectionId)?.name || "",
+        database: tab.database,
+        sql,
+        execution_time_ms: elapsedMs,
+        success: !failureMessage,
+        error: failureMessage,
+        activity_kind: classifySqlActivityKind(sql),
+        operation: primarySqlOperation(sql),
+        target: [tableMeta?.schema, tableMeta?.tableName].filter(Boolean).join("."),
+      })
+      .catch((error) => console.warn("[DBX] failed to record table data history", error));
+  }
+
   function setErrorResult(id: string, e: any) {
     const tab = tabs.value.find((t) => t.id === id);
     if (!tab) return;
@@ -4593,6 +4628,10 @@ export const useQueryStore = defineStore("query", () => {
     let useAgentResultSession = false;
     let executionDispatched = false;
     let producedResult = false;
+    // Set in the catch below so the history entry reports the real outcome even
+    // on the paths that keep the previously displayed result (retained result
+    // run, preserved append) instead of storing the error result.
+    let executionFailureMessage: string | undefined;
     const resumedExecutionTarget = batchResume?.batch.executionTarget;
     const executionConnectionId = resumedExecutionTarget?.connectionId ?? options?.executionTarget?.connectionId ?? tab.connectionId;
     try {
@@ -5562,6 +5601,7 @@ export const useQueryStore = defineStore("query", () => {
       }
     } catch (e: any) {
       queryExecutionLog("error", "error", { traceId, elapsed: elapsed(), error: e });
+      executionFailureMessage = translateBackendError(i18n.global.t, e);
       // Sync connection state if the error indicates a lost connection
       useConnectionStore().recordConnectionLostError(executionConnectionId ?? tab.connectionId, e);
       // Handle manual transaction auto-rollback (idle timeout only for the banner;
@@ -5656,6 +5696,10 @@ export const useQueryStore = defineStore("query", () => {
         current.queryExecutionStartedAt = undefined;
         current.executionId = undefined;
         clearLiveBatchSqlExecution(current, executionId);
+        if (current.mode === "data") {
+          const displayedResult = current.result;
+          recordDataTabHistory(current, sql, executionFailureMessage ?? (displayedResult && isQueryExecutionErrorResult(displayedResult) ? String(displayedResult.rows?.[0]?.[0] ?? "") : undefined), Math.round(performance.now() - startedAt));
+        }
         queryExecutionLog("info", "finish", { traceId, elapsed: elapsed() });
       } else {
         pendingResultRunRestores.delete(executionId);

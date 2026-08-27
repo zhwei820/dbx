@@ -8,7 +8,7 @@ import { useToast } from "@/composables/useToast";
 import { isSingleDatabase, usesTreeSchemaMode } from "@/lib/database/databaseCapabilities";
 import { supportsConnectionScopedQueryExecution } from "@/lib/database/databaseFeatureSupport";
 import { supportsConnectionLevelSqlExecution } from "@/lib/connection/connectionLevelDatabaseBootstrap";
-import { classifySqlActivityKind } from "@/lib/history/historyActivityKind";
+import { classifySqlActivityKind, primarySqlOperation } from "@/lib/history/historyActivityKind";
 import { sqlMetadataRefreshTarget } from "@/lib/sql/sqlMetadataRefresh";
 import { defaultViewForResult } from "@/lib/query/queryResultDefaultView";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
@@ -86,15 +86,6 @@ export function isDangerousSql(sql: string, databaseType?: DatabaseType): boolea
   }
   const cleaned = stripSqlComments(sql);
   return cleaned.split(";").some((stmt) => DANGER_RE.test(stmt));
-}
-
-function primarySqlOperation(sql: string): string {
-  const cleaned = stripSqlComments(sql);
-  const statement = cleaned
-    .split(";")
-    .map((part) => part.trim())
-    .find(Boolean);
-  return statement?.match(/^([a-z]+)/i)?.[1]?.toUpperCase() || "SQL";
 }
 
 function firstQueryExecutionError(tab: Pick<QueryTab, "result" | "results">) {

@@ -24,6 +24,12 @@ function statementsFor(sql: string): string[] {
     .filter(Boolean);
 }
 
+/** Leading keyword of the first statement, used as the history entry's operation. */
+export function primarySqlOperation(sql: string): string {
+  const statement = statementsFor(sql).find(Boolean);
+  return statement?.match(/^([a-z]+)/i)?.[1]?.toUpperCase() || "SQL";
+}
+
 export function classifySqlActivityKind(sql: string): "query" | "data_change" | "schema_change" {
   const statements = statementsFor(sql);
   if (statements.some((stmt) => SCHEMA_RE.test(stmt))) return "schema_change";
