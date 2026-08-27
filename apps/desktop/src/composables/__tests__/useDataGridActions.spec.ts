@@ -207,7 +207,24 @@ describe("useDataGridActions", () => {
     expect(mocks.buildTableSelectSql).toHaveBeenCalledWith(
       expect.objectContaining({
         columns: undefined,
-        fallbackOrderColumns: ["id", "name"],
+        fallbackOrderColumns: ["id"],
+      }),
+    );
+  });
+
+  it("does not infer a fallback order when the previous successful result has no id column", async () => {
+    const tab = tableDataTab({
+      tableMeta: { schema: "public", tableName: "users", tableType: "TABLE", columns: [], primaryKeys: [] },
+      result: { columns: ["name", "created_at"], rows: [["Ada", "2026-08-27"]], affected_rows: 0, execution_time_ms: 1 },
+    });
+    const actions = useDataGridActions(computed(() => tab));
+
+    await actions.onPaginate(100, 100);
+
+    expect(mocks.buildTableSelectSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        columns: undefined,
+        fallbackOrderColumns: undefined,
       }),
     );
   });
