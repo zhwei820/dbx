@@ -23,7 +23,7 @@ export function collapseOtherExpandedDatabases(nodes: readonly TreeNode[], opene
   const visited = new WeakSet<TreeNode>();
   let collapsedCount = 0;
 
-  const collapseOthers = (treeNodes: readonly TreeNode[]) => {
+  const collapseOthers = (treeNodes: readonly TreeNode[]): void => {
     for (const node of treeNodes) {
       if (visited.has(node)) continue;
       visited.add(node);
