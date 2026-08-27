@@ -1379,6 +1379,36 @@ fn oracle_view_first_page_preserves_filter_and_sort_without_rownum() {
 }
 
 #[test]
+fn table_data_defaults_to_id_desc_when_id_column_exists() {
+    assert_eq!(
+        build_table_data_select_sql(TableDataSelectSqlOptions {
+            database_type: Some(DatabaseType::Mysql),
+            table_name: "users".to_string(),
+            columns: vec!["name".to_string(), "ID".to_string()],
+            limit: Some(100),
+            ..Default::default()
+        }),
+        "SELECT `name`, `ID` FROM `users` ORDER BY `ID` DESC LIMIT 100;"
+    );
+}
+
+#[test]
+fn explicit_table_data_order_overrides_default_id_order() {
+    assert_eq!(
+        build_table_data_select_sql(TableDataSelectSqlOptions {
+            database_type: Some(DatabaseType::Postgres),
+            schema: Some("public".to_string()),
+            table_name: "users".to_string(),
+            columns: vec!["id".to_string(), "created_at".to_string()],
+            order_by: Some("\"created_at\" ASC".to_string()),
+            limit: Some(100),
+            ..Default::default()
+        }),
+        "SELECT \"id\", \"created_at\" FROM \"public\".\"users\" ORDER BY \"created_at\" ASC LIMIT 100;"
+    );
+}
+
+#[test]
 fn oracle_view_later_pages_keep_rownum_pagination() {
     assert_eq!(
         build_table_data_select_sql(TableDataSelectSqlOptions {

@@ -238,9 +238,21 @@ pub fn build_table_data_select_sql_with_database(
     };
     let predicate = normalize_where_input(options.where_input.as_deref());
     let where_clause = if predicate.is_empty() { String::new() } else { format!(" WHERE ({predicate})") };
+    let id_order_by = options
+        .columns
+        .iter()
+        .find(|column| column.eq_ignore_ascii_case("id"))
+        .map(|column| {
+            format!(
+                "{} DESC",
+                quote_table_data_identifier(database_type, column, options.identifier_quote.as_deref())
+            )
+        });
     let default_order_by = if database_type == Some(DatabaseType::InfluxDb) {
         // InfluxQL only allows sorting of timestamp column
         Some("time DESC".to_string())
+    } else if id_order_by.is_some() {
+        id_order_by
     } else if database_type == Some(DatabaseType::Impala) {
         // Impala requires ORDER BY when OFFSET is present. Keeping the same
         // fallback on the first page also prevents page boundaries from using
