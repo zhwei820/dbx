@@ -9,7 +9,7 @@ import { TabsContent } from "@/components/ui/tabs";
 import TemporalCellEditor from "@/components/grid/TemporalCellEditor.vue";
 import { useDataGridCellDetail } from "@/composables/useDataGridCellDetail";
 import { BINARY_CELL_DOWNLOAD_MODES, binaryCellUtf8Text, isBlobCellColumnType, type BinaryCellDownloadMode } from "@/lib/dataGrid/binaryCellDownload";
-import { isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
+import { int64TimestampPreview, isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
 import { isHexGeometry } from "@/lib/dataGrid/geometryPreview";
 import type { DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
 import type { TemporalCellEditorConfig } from "@/lib/dataGrid/dataGridTemporalEditor";
@@ -63,6 +63,7 @@ void sideJsonPreviewContainer;
 
 const binaryTextPreview = computed(() => (isBlobCellColumnType(props.detail.type) ? binaryCellUtf8Text(props.detail.value, props.detail.type, props.databaseType) : null));
 const presentedValuePreview = computed(() => (binaryTextPreview.value === null ? props.detail.rawValuePreview : props.detail.displayValuePreview));
+const timestampPreview = computed(() => int64TimestampPreview(props.detail.value, props.detail.type));
 
 function startJsonEditFromBlankArea(event: MouseEvent) {
   const target = event.target as { closest?: (selector: string) => Element | null } | null;
@@ -194,6 +195,12 @@ defineExpose({ openSearch });
           >{{ presentedValuePreview }}</pre
         >
         <div v-if="detail.isValuePreviewTruncated && !sideJsonView" class="text-[11px] text-muted-foreground">{{ t("grid.largeValuePreviewHint", { count: detail.rawValuePreview.length }) }}</div>
+        <div v-if="!editing && timestampPreview" data-int64-timestamp-preview class="grid gap-x-3 gap-y-1 rounded border bg-muted/20 p-2 sm:grid-cols-[auto_1fr]">
+          <div class="text-muted-foreground">UTC+0</div>
+          <div class="dbx-data-grid-value-font break-all">{{ timestampPreview.utc }}</div>
+          <div class="text-muted-foreground">UTC+8</div>
+          <div class="dbx-data-grid-value-font break-all">{{ timestampPreview.utc8 }}</div>
+        </div>
       </div>
     </div>
     <div class="border-t flex gap-1 overflow-hidden bg-background p-1.5" :class="panelIsBottom ? 'shrink-0 items-center' : 'shrink-0 flex-col'">

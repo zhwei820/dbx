@@ -10,7 +10,7 @@ import { useCellDetailEditor, type UseCellDetailEditorReturn } from "@/composabl
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { BINARY_CELL_DOWNLOAD_MODES, binaryCellUtf8Text, isBlobCellColumnType, type BinaryCellDownloadMode } from "@/lib/dataGrid/binaryCellDownload";
-import { isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
+import { int64TimestampPreview, isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
 import { isHexGeometry, renderWktOnCanvas } from "@/lib/dataGrid/geometryPreview";
 import type { DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
 import type { DatabaseType } from "@/types/database";
@@ -46,6 +46,7 @@ const jsonFormatted = computed(() => settingsStore.editorSettings.cellDetailJson
 const jsonView = computed(() => jsonFormatted.value && !!props.detail?.formattedJson);
 const binaryTextPreview = computed(() => (props.detail && isBlobCellColumnType(props.detail.type) ? binaryCellUtf8Text(props.detail.value, props.detail.type, props.databaseType) : null));
 const presentedValuePreview = computed(() => (binaryTextPreview.value === null ? props.detail?.rawValuePreview : props.detail?.displayValuePreview) ?? "");
+const timestampPreview = computed(() => (props.detail ? int64TimestampPreview(props.detail.value, props.detail.type) : null));
 
 function toggleJsonFormatted() {
   settingsStore.updateEditorSettings({ cellDetailJsonFormatted: !jsonFormatted.value });
@@ -194,6 +195,12 @@ watch(
           <pre v-else class="dbx-data-grid-value-font max-h-[44vh] overflow-auto rounded border bg-muted/20 p-3 text-xs whitespace-pre-wrap break-words" :class="{ 'italic text-muted-foreground': detail.value === null }">{{ presentedValuePreview }}</pre>
           <div v-if="detail.isValuePreviewTruncated && !jsonView" class="text-[11px] text-muted-foreground">
             {{ t("grid.largeValuePreviewHint", { count: detail.rawValuePreview.length }) }}
+          </div>
+          <div v-if="timestampPreview" data-int64-timestamp-preview class="grid gap-x-3 gap-y-1 rounded border bg-muted/20 p-3 sm:grid-cols-[auto_1fr]">
+            <div class="text-muted-foreground">UTC+0</div>
+            <div class="dbx-data-grid-value-font break-all">{{ timestampPreview.utc }}</div>
+            <div class="text-muted-foreground">UTC+8</div>
+            <div class="dbx-data-grid-value-font break-all">{{ timestampPreview.utc8 }}</div>
           </div>
         </div>
       </div>

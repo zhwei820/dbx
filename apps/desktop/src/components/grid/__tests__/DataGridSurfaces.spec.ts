@@ -1253,6 +1253,53 @@ describe("DataGridTextFilterWorkbench", () => {
 });
 
 describe("cell detail surfaces", () => {
+  it("shows UTC+0 and UTC+8 timestamp interpretations for plausible int64 values", () => {
+    const timestampDetail = detail({
+      type: "BIGINT",
+      value: "1704067200",
+      rawValue: "1704067200",
+      rawValuePreview: "1704067200",
+      displayValue: "1704067200",
+      displayValuePreview: "1704067200",
+      formattedJson: "",
+    });
+    const dialog = mountComponent(DataGridCellDetailDialog, {
+      open: true,
+      detail: timestampDetail,
+      typeColorClass: () => "",
+      openImagePreview: vi.fn(),
+      copyText: vi.fn(),
+      canDownloadBinaryValue: () => false,
+      downloadBinaryValue: vi.fn(),
+      canImportBinaryValue: () => false,
+      importBinaryValue: vi.fn(),
+    });
+    const panel = mountComponent(DataGridCellDetailPanel, {
+      detail: timestampDetail,
+      panelIsBottom: true,
+      metadataCollapsed: false,
+      valueFillsHeight: false,
+      editing: false,
+      sideJsonView: false,
+      showCompactJson: false,
+      canCompactJson: false,
+      typeColorClass: () => "",
+      canDownloadBinaryValue: () => false,
+      downloadBinaryValue: vi.fn(),
+      canImportBinaryValue: () => false,
+      importBinaryValue: vi.fn(),
+      openImagePreview: vi.fn(),
+      canCopySqlCondition: () => true,
+    });
+
+    for (const mounted of [dialog, panel]) {
+      expect(hostText(mounted.root)).toContain("UTC+0");
+      expect(hostText(mounted.root)).toContain("2024-01-01 00:00:00.000");
+      expect(hostText(mounted.root)).toContain("UTC+8");
+      expect(hostText(mounted.root)).toContain("2024-01-01 08:00:00.000");
+    }
+  });
+
   it("presents printable LONG BLOB bytes as text and copies the presented value", async () => {
     const copyText = vi.fn();
     const blobDetail = detail({

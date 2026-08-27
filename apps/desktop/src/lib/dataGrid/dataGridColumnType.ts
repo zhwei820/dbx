@@ -175,6 +175,8 @@ const INTEGER_COLUMN_TYPE_BASES = new Set([
   "year",
 ]);
 
+const INT64_COLUMN_TYPE_BASES = new Set(["bigint", "bigserial", "int8", "int64", "uint64"]);
+
 const STRING_COLUMN_TYPE_BASES = new Set([
   "varchar",
   "varchar2",
@@ -247,6 +249,12 @@ function dataGridColumnTypeBase(dataType: string): { base: string; array: boolea
   else if (base.startsWith("time without ")) base = "time";
   else if (base === "double precision") base = "double";
   return { base, array: unwrapped.array };
+}
+
+export function isInt64ColumnType(dataType: string | undefined): boolean {
+  if (!dataType?.trim()) return false;
+  const { base, array } = dataGridColumnTypeBase(dataType);
+  return !array && INT64_COLUMN_TYPE_BASES.has(base);
 }
 
 /**
