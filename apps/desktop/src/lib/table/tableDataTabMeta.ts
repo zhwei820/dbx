@@ -50,6 +50,6 @@ export function tableMetaForDataTab(tab: QueryTab | undefined): DataTabTableMeta
  */
 export function tableDataFallbackOrderColumns(tab: QueryTab | undefined): string[] | undefined {
   if (!tab || tab.mode !== "data" || !tab.result || isQueryExecutionErrorResult(tab.result)) return undefined;
-  const idColumn = tab.result.columns.find((column) => column.trim().toLowerCase() === "id");
+  const idColumn = tab.result.columns.find((column) => column.toLowerCase() === "id");
   return idColumn ? [idColumn] : undefined;
 }

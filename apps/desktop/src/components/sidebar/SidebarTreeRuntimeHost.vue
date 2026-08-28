@@ -1923,6 +1923,29 @@ async function copyName() {
   }
 }
 
+function connectionDetailsClipboardText(): string | null {
+  const connectionId = activeNode.value.connectionId;
+  const config = connectionId ? connectionStore.getConfig(connectionId) : undefined;
+  if (!config) return null;
+  return [
+    `${t("contextMenu.connectionAddress")}: ${config.host}`,
+    `${t("contextMenu.connectionPort")}: ${config.port || ""}`,
+    `${t("contextMenu.connectionUsername")}: ${config.username}`,
+    `${t("contextMenu.connectionPassword")}: ${config.save_password === false ? "" : config.password}`,
+  ].join("\n");
+}
+
+async function copyConnectionDetails() {
+  const value = connectionDetailsClipboardText();
+  if (value === null) return;
+  try {
+    await copyToClipboard(value);
+    toast(t("connection.copied"), 2000);
+  } catch (e: any) {
+    toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
 async function copyDisplayPath() {
   const node = activeNode.value;
   const connectionName = node.connectionId ? connectionStore.getConfig(node.connectionId)?.name || "" : "";
@@ -4840,6 +4863,7 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
     }
     items.push({ label: "", separator: true });
     items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push({ label: t("contextMenu.copyConnectionDetails"), action: copyConnectionDetails, icon: Copy });
     items.push({ label: "", separator: true });
     const supportsQueryActions = supportsConnectionQueryActions(currentDatabaseType());
     const supportsAiContext = supportsAiAssistantContext(currentDatabaseType());

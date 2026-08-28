@@ -114,6 +114,22 @@ test("MySQL object name menus expose leaf and display-path copy choices", () => 
   assert.match(objectMenuBody, /node\.type === "sequence"[\s\S]*action: copyName/);
 });
 
+test("connection menus copy all connection details in one action without exposing session-only passwords", () => {
+  const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
+  const detailTextBody = functionBody(runtimeHost, "connectionDetailsClipboardText");
+  const copyDetailsBody = functionBody(runtimeHost, "copyConnectionDetails");
+  const connectionMenuBody = functionBody(runtimeHost, "buildConnectionSidebarMenu");
+
+  assert.match(detailTextBody, /connectionAddress[\s\S]*config\.host/);
+  assert.match(detailTextBody, /connectionPort[\s\S]*config\.port/);
+  assert.match(detailTextBody, /connectionUsername[\s\S]*config\.username/);
+  assert.match(detailTextBody, /connectionPassword[\s\S]*config\.save_password === false \? "" : config\.password/);
+  assert.match(detailTextBody, /\.join\("\\n"\)/);
+  assert.match(copyDetailsBody, /connectionDetailsClipboardText\(\)/);
+  assert.match(copyDetailsBody, /copyToClipboard\(value\)/);
+  assert.match(connectionMenuBody, /action: copyConnectionDetails/);
+});
+
 test("successful tree table paste consumes only the clipboard used to start it", () => {
   const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
   const confirmPasteTableBody = functionBody(runtimeHost, "confirmPasteTable");
