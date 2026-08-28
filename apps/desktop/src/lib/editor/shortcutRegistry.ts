@@ -196,7 +196,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "duplicateLine",
     labelKey: "settings.shortcutDuplicateLine",
     scope: "editor",
-    defaultShortcut: "Mod+D",
+    defaultShortcut: "",
   },
   {
     id: "deleteLine",

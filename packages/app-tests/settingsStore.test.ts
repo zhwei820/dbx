@@ -6,7 +6,7 @@ import { DEFAULT_SQL_FORMATTER_SETTINGS } from "../../apps/desktop/src/lib/sql/s
 import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS } from "../../apps/desktop/src/lib/table/tableColumnTemplates.ts";
 import { DEFAULT_DATA_GRID_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, SYSTEM_UI_FONT_FAMILY } from "../../apps/desktop/src/lib/app/appFonts.ts";
 import { tableOpenPageLimit } from "../../apps/desktop/src/lib/table/tableOpenPageLimit.ts";
-import { AI_PROVIDER_PRESETS, DEFAULT_EDITOR_SETTINGS, EXECUTE_MODE_CURRENT_DEFAULT_VERSION, normalizeAiConfig, normalizeEditorSettings, useSettingsStore } from "../../apps/desktop/src/stores/settingsStore.ts";
+import { AI_PROVIDER_PRESETS, DEFAULT_EDITOR_SETTINGS, EXECUTE_MODE_CURRENT_DEFAULT_VERSION, SHORTCUT_DEFAULTS_CURRENT_VERSION, normalizeAiConfig, normalizeEditorSettings, useSettingsStore } from "../../apps/desktop/src/stores/settingsStore.ts";
 import { DEFAULT_SHORTCUT_SETTINGS, tabNavigationHistoryDefaultShortcut, type ShortcutSettings } from "../../apps/desktop/src/lib/editor/shortcutRegistry.ts";
 
 const saveEditorSettingsMock = vi.hoisted(() => vi.fn());
@@ -387,6 +387,8 @@ test("defaults sidebar table search to disabled and preserves saved booleans", (
 test("defaults shortcut settings", () => {
   const settings = normalizeEditorSettings({});
 
+  assert.equal(settings.shortcutDefaultsVersion, SHORTCUT_DEFAULTS_CURRENT_VERSION);
+  assert.equal(settings.shortcuts.duplicateLine, "");
   assert.equal(settings.shortcuts.executeSql, "Mod+Enter");
   assert.equal(settings.shortcuts.saveSql, "Mod+S");
   assert.equal(settings.shortcuts.extendSelection, "Alt+W");
@@ -410,6 +412,15 @@ test("defaults shortcut settings", () => {
   assert.equal(settings.shortcuts.copySidebarSelection, "Mod+C");
   assert.equal(settings.shortcuts.pasteSidebarSelection, "Mod+V");
   assert.equal(settings.shortcuts.editSidebarConnection, "Mod+E");
+});
+
+test("migrates the legacy Mod+D duplicate-line default to CodeMirror occurrence selection", () => {
+  const legacy = normalizeEditorSettings({ shortcuts: { ...DEFAULT_SHORTCUT_SETTINGS, duplicateLine: "Mod+D" }, shortcutDefaultsVersion: 0 });
+  const current = normalizeEditorSettings({ shortcuts: { ...DEFAULT_SHORTCUT_SETTINGS, duplicateLine: "Mod+D" }, shortcutDefaultsVersion: SHORTCUT_DEFAULTS_CURRENT_VERSION });
+
+  assert.equal(legacy.shortcuts.duplicateLine, "");
+  assert.equal(legacy.shortcutDefaultsVersion, SHORTCUT_DEFAULTS_CURRENT_VERSION);
+  assert.equal(current.shortcuts.duplicateLine, "Mod+D");
 });
 
 test("keeps saved shortcut overrides", () => {

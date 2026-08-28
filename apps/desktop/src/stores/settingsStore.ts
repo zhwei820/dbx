@@ -525,6 +525,7 @@ export interface EditorSettings {
   activeCustomThemeId: string;
   executeMode: "all" | "current";
   executeModeDefaultVersion: number;
+  shortcutDefaultsVersion: number;
   executeAllOnBlankLine: boolean;
   globalConnectTimeoutSecs: number;
   connectTimeoutInheritConnectionIds: string[];
@@ -730,6 +731,7 @@ export const EDITOR_THEMES: {
 const EDITOR_THEME_VALUES = new Set<EditorTheme>(EDITOR_THEMES.map((theme) => theme.value));
 
 export const EXECUTE_MODE_CURRENT_DEFAULT_VERSION = 1;
+export const SHORTCUT_DEFAULTS_CURRENT_VERSION = 1;
 
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   fontFamily: "'Fira Code', 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', monospace",
@@ -742,6 +744,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   activeCustomThemeId: "default",
   executeMode: "current",
   executeModeDefaultVersion: EXECUTE_MODE_CURRENT_DEFAULT_VERSION,
+  shortcutDefaultsVersion: SHORTCUT_DEFAULTS_CURRENT_VERSION,
   executeAllOnBlankLine: false,
   globalConnectTimeoutSecs: 10,
   connectTimeoutInheritConnectionIds: [],
@@ -1096,6 +1099,10 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
   const savedExecuteModeDefaultVersion = settings.executeModeDefaultVersion;
   const executeModeDefaultVersion = typeof savedExecuteModeDefaultVersion === "number" && savedExecuteModeDefaultVersion >= EXECUTE_MODE_CURRENT_DEFAULT_VERSION ? savedExecuteModeDefaultVersion : EXECUTE_MODE_CURRENT_DEFAULT_VERSION;
   const hasCurrentExecuteModeDefault = executeModeDefaultVersion === savedExecuteModeDefaultVersion;
+  const savedShortcutDefaultsVersion = settings.shortcutDefaultsVersion;
+  const shortcutDefaultsVersion = typeof savedShortcutDefaultsVersion === "number" && savedShortcutDefaultsVersion >= SHORTCUT_DEFAULTS_CURRENT_VERSION ? savedShortcutDefaultsVersion : SHORTCUT_DEFAULTS_CURRENT_VERSION;
+  const hasCurrentShortcutDefaults = shortcutDefaultsVersion === savedShortcutDefaultsVersion;
+  const shortcuts = !hasCurrentShortcutDefaults && settings.shortcuts?.duplicateLine === "Mod+D" ? { ...settings.shortcuts, duplicateLine: "" } : settings.shortcuts;
   // The active id can only be validated once the scheme list it points into is known.
   const dataGridTypeColorSchemes = normalizeDataGridTypeColorSchemes(settings.dataGridTypeColorSchemes);
   return {
@@ -1139,6 +1146,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     activeCustomThemeId: settings.activeCustomThemeId ?? "default",
     executeMode: hasCurrentExecuteModeDefault && (settings.executeMode === "all" || settings.executeMode === "current") ? settings.executeMode : DEFAULT_EDITOR_SETTINGS.executeMode,
     executeModeDefaultVersion,
+    shortcutDefaultsVersion,
     executeAllOnBlankLine: settings.executeAllOnBlankLine === true,
     globalConnectTimeoutSecs: normalizeGlobalConnectTimeoutSecs(settings.globalConnectTimeoutSecs),
     connectTimeoutInheritConnectionIds: Array.isArray(settings.connectTimeoutInheritConnectionIds) ? [...new Set(settings.connectTimeoutInheritConnectionIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim()))] : [],
@@ -1215,7 +1223,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     cellDetailPanelLayout: normalizeCellDetailPanelLayout(settings.cellDetailPanelLayout),
     cellDetailJsonFormatted: typeof settings.cellDetailJsonFormatted === "boolean" ? settings.cellDetailJsonFormatted : DEFAULT_EDITOR_SETTINGS.cellDetailJsonFormatted,
     cellDetailMetadataCollapsed: typeof settings.cellDetailMetadataCollapsed === "boolean" ? settings.cellDetailMetadataCollapsed : DEFAULT_EDITOR_SETTINGS.cellDetailMetadataCollapsed,
-    shortcuts: normalizeShortcutSettings(settings.shortcuts),
+    shortcuts: normalizeShortcutSettings(shortcuts),
     sqlFormatter: normalizeSqlFormatterSettings(settings.sqlFormatter),
     sidebarActivation: settings.sidebarActivation === "single" || settings.sidebarActivation === "double" ? settings.sidebarActivation : DEFAULT_EDITOR_SETTINGS.sidebarActivation,
     sidebarConnectionSortMode: normalizeConnectionListSortMode(settings.sidebarConnectionSortMode),
@@ -1437,9 +1445,10 @@ export const useSettingsStore = defineStore("settings", () => {
           const normalized = normalizeEditorSettings(savedSettings);
           editorSettings.value = normalized;
           const needsExecuteModeDefaultMigration = typeof savedSettings.executeModeDefaultVersion !== "number" || savedSettings.executeModeDefaultVersion < EXECUTE_MODE_CURRENT_DEFAULT_VERSION;
+          const needsShortcutDefaultsMigration = typeof savedSettings.shortcutDefaultsVersion !== "number" || savedSettings.shortcutDefaultsVersion < SHORTCUT_DEFAULTS_CURRENT_VERSION;
           const needsTabNavigationShortcutMigration = needsTabNavigationHistoryShortcutMigration(savedSettings.shortcuts);
           const savedUpdateDownloadSource = (saved as { updateDownloadSource?: unknown }).updateDownloadSource;
-          if (savedUpdateDownloadSource === "atomgit" || needsExecuteModeDefaultMigration || needsTabNavigationShortcutMigration) {
+          if (savedUpdateDownloadSource === "atomgit" || needsExecuteModeDefaultMigration || needsShortcutDefaultsMigration || needsTabNavigationShortcutMigration) {
             // Persist one-time migrations so removed or unsafe defaults cannot reappear.
             await enqueueEditorSettingsSave().catch(() => {});
           }
@@ -1748,6 +1757,7 @@ export const useSettingsStore = defineStore("settings", () => {
       }
     }
     if (partial.executeMode !== undefined) editorSettings.value.executeMode = partial.executeMode;
+    if (partial.shortcutDefaultsVersion !== undefined) editorSettings.value.shortcutDefaultsVersion = Math.max(0, Math.floor(partial.shortcutDefaultsVersion));
     if (partial.executeAllOnBlankLine !== undefined) editorSettings.value.executeAllOnBlankLine = partial.executeAllOnBlankLine === true;
     if (partial.globalConnectTimeoutSecs !== undefined) editorSettings.value.globalConnectTimeoutSecs = normalizeGlobalConnectTimeoutSecs(partial.globalConnectTimeoutSecs);
     if (partial.connectTimeoutInheritConnectionIds !== undefined) {

@@ -223,7 +223,7 @@ describe("shortcutRegistry editor actions", () => {
     expect(shortcuts.indentMore).toBe("");
     expect(shortcuts.indentLess).toBe("Shift+Tab");
     expect(shortcuts.joinLines).toBe("Mod+J");
-    expect(shortcuts.duplicateLine).toBe("Mod+D");
+    expect(shortcuts.duplicateLine).toBe("");
     expect(shortcuts.deleteLine).toBe("Shift+Mod+K");
     expect(shortcuts.moveLineUp).toBe("Alt+ArrowUp");
     expect(shortcuts.moveLineDown).toBe("Alt+ArrowDown");
