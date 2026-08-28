@@ -114,16 +114,26 @@ test("MySQL object name menus expose leaf and display-path copy choices", () => 
   assert.match(objectMenuBody, /node\.type === "sequence"[\s\S]*action: copyName/);
 });
 
-test("connection menus copy all connection details in one action without exposing session-only passwords", () => {
+test("connection menus copy MySQL details as a safe mycli command and other details as labeled text", () => {
   const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
+  const shellQuoteBody = functionBody(runtimeHost, "shellQuoteCliValue");
   const detailTextBody = functionBody(runtimeHost, "connectionDetailsClipboardText");
   const copyDetailsBody = functionBody(runtimeHost, "copyConnectionDetails");
   const connectionMenuBody = functionBody(runtimeHost, "buildConnectionSidebarMenu");
 
+  assert.match(shellQuoteBody, /A-Za-z0-9_@%/);
+  assert.match(shellQuoteBody, /\.test\(value\)/);
+  assert.match(shellQuoteBody, /value\.replace\(\/\'\/g/);
+  assert.match(detailTextBody, /config\.db_type === "mysql"/);
+  assert.match(detailTextBody, /const args = \["mycli"\]/);
+  assert.match(detailTextBody, /`-h\$\{shellQuoteCliValue\(config\.host\)\}`/);
+  assert.match(detailTextBody, /`-P\$\{config\.port\}`/);
+  assert.match(detailTextBody, /`-u\$\{shellQuoteCliValue\(config\.username\)\}`/);
+  assert.match(detailTextBody, /`-p\$\{shellQuoteCliValue\(password\)\}`/);
   assert.match(detailTextBody, /connectionAddress[\s\S]*config\.host/);
   assert.match(detailTextBody, /connectionPort[\s\S]*config\.port/);
   assert.match(detailTextBody, /connectionUsername[\s\S]*config\.username/);
-  assert.match(detailTextBody, /connectionPassword[\s\S]*config\.save_password === false \? "" : config\.password/);
+  assert.match(detailTextBody, /connectionPassword[\s\S]*password/);
   assert.match(detailTextBody, /\.join\("\\n"\)/);
   assert.match(copyDetailsBody, /connectionDetailsClipboardText\(\)/);
   assert.match(copyDetailsBody, /copyToClipboard\(value\)/);

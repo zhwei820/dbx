@@ -1923,15 +1923,29 @@ async function copyName() {
   }
 }
 
+function shellQuoteCliValue(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 function connectionDetailsClipboardText(): string | null {
   const connectionId = activeNode.value.connectionId;
   const config = connectionId ? connectionStore.getConfig(connectionId) : undefined;
   if (!config) return null;
+  const password = config.save_password === false ? "" : config.password;
+  if (config.db_type === "mysql") {
+    const args = ["mycli"];
+    if (config.host) args.push(`-h${shellQuoteCliValue(config.host)}`);
+    if (config.port > 0) args.push(`-P${config.port}`);
+    if (config.username) args.push(`-u${shellQuoteCliValue(config.username)}`);
+    if (password) args.push(`-p${shellQuoteCliValue(password)}`);
+    return args.join(" ");
+  }
   return [
     `${t("contextMenu.connectionAddress")}: ${config.host}`,
     `${t("contextMenu.connectionPort")}: ${config.port || ""}`,
     `${t("contextMenu.connectionUsername")}: ${config.username}`,
-    `${t("contextMenu.connectionPassword")}: ${config.save_password === false ? "" : config.password}`,
+    `${t("contextMenu.connectionPassword")}: ${password}`,
   ].join("\n");
 }
 
