@@ -663,11 +663,316 @@ function parseJdbcDremioArrowFlightSqlUrl(source: string): ParsedConnectionUrl |
   };
 }
 
+type MysqlCliOptions = {
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  database?: string;
+  charset?: string;
+  ssl?: boolean;
+  dsn?: string;
+};
+
+const MYSQL_CLI_COMMAND_SCHEMES: Record<string, string> = {
+  mysql: "mysql",
+  mycli: "mysql",
+  mariadb: "mariadb",
+};
+
+// Short flags that take a value. `-p` is handled separately: the mysql client
+// only reads a password that is attached to the flag, and a bare `-p` means
+// "prompt me" instead of consuming the next argument.
+const MYSQL_CLI_VALUE_SHORT_FLAGS = new Set(["h", "P", "u", "D", "S", "e", "O", "R", "l", "d"]);
+
+// Long options that take a value but carry no connection field we keep. They
+// must still be listed so a detached value is not mistaken for the database.
+const MYSQL_CLI_IGNORED_VALUE_LONG_OPTIONS = new Set([
+  "socket",
+  "execute",
+  "protocol",
+  "connect-timeout",
+  "login-path",
+  "defaults-file",
+  "defaults-extra-file",
+  "prompt",
+  "pager",
+  "bind-address",
+  "plugin-dir",
+  "default-auth",
+  "init-command",
+  "server-public-key-path",
+  "character-sets-dir",
+  "ssl-ca",
+  "ssl-capath",
+  "ssl-cert",
+  "ssl-cipher",
+  "ssl-key",
+  "ssl-crl",
+  "ssl-crlpath",
+  "ssl-fips-mode",
+  "tls-version",
+  "tls-ciphersuites",
+  "dsn",
+  "myclirc",
+  "logfile",
+  "auth-plugin",
+]);
+
+const MYSQL_CLI_TLS_SSL_MODES = new Set(["required", "require", "verify_ca", "verify_identity"]);
+
+function tokenizeShellCommand(input: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (quote === "'") {
+      if (char === "'") {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (quote === '"') {
+      if (char === "\\" && index + 1 < input.length && ['"', "\\", "$", "`"].includes(input[index + 1])) {
+        current += input[index + 1];
+        index += 1;
+      } else if (char === '"') {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (char === "\\" && index + 1 < input.length) {
+      // Keep a backslash that escapes nothing so Windows paths survive.
+      const next = input[index + 1];
+      if (/[\s'"\\$`]/.test(next)) {
+        current += next;
+        index += 1;
+      } else {
+        current += char;
+      }
+      started = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) {
+        tokens.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    current += char;
+    started = true;
+  }
+
+  if (quote) return null;
+  if (started) tokens.push(current);
+  return tokens;
+}
+
+function mysqlCliCommand(token: string): { command: string; scheme: string } | null {
+  if (token.includes("://")) return null;
+  const basename = token.split(/[/\\]/).pop() || "";
+  const command = basename.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  const scheme = MYSQL_CLI_COMMAND_SCHEMES[command];
+  return scheme ? { command, scheme } : null;
+}
+
+function mysqlCliPort(value: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid port in connection command: ${value}`);
+  }
+  return port;
+}
+
+function mysqlCliSslMode(value: string): boolean {
+  return MYSQL_CLI_TLS_SSL_MODES.has(value.trim().toLowerCase().replace(/-/g, "_"));
+}
+
+function mergeMysqlCliUrlParams(baseParams: string, charset: string | undefined): string {
+  if (!charset) return baseParams;
+  const kept = baseParams
+    .split("&")
+    .filter((part) => part && decodeUrlPart(part.split("=")[0]).trim().toLowerCase() !== "charset")
+    .join("&");
+  return [kept, `charset=${charset}`].filter(Boolean).join("&");
+}
+
+/**
+ * Parses a mysql-family command line (`mysql`, `mycli`, `mariadb`) so users can
+ * paste what they already have in a terminal — including the `mycli -h… -P… -u… -p…`
+ * line DBX itself puts on the clipboard from "copy connection details".
+ */
+function parseMysqlCliCommand(value: string, preferredProfile?: string): ParsedConnectionUrl | null {
+  const tokens = tokenizeShellCommand(value.replace(/^[$#>]\s+/, ""));
+  if (!tokens?.length) return null;
+  const cliCommand = mysqlCliCommand(tokens[0]);
+  if (!cliCommand) return null;
+  // mycli uses click, where `-p secret` is valid; the mysql client is not.
+  const allowDetachedPassword = cliCommand.command === "mycli";
+
+  const options: MysqlCliOptions = {};
+  const positionals: string[] = [];
+  let sawKnownOption = false;
+  let index = 1;
+
+  const detachedValue = (): string | undefined => {
+    const next = tokens[index + 1];
+    if (next === undefined || next.startsWith("-")) return undefined;
+    index += 1;
+    return next;
+  };
+
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (token === "--") continue;
+
+    if (token.startsWith("--")) {
+      const body = token.slice(2);
+      const separator = body.indexOf("=");
+      const name = (separator >= 0 ? body.slice(0, separator) : body).toLowerCase();
+      const attached = separator >= 0 ? body.slice(separator + 1) : undefined;
+      const optionValue = () => attached ?? detachedValue();
+
+      if (name === "host") {
+        const host = optionValue();
+        if (host) {
+          options.host = host;
+          sawKnownOption = true;
+        }
+      } else if (name === "port") {
+        const port = optionValue();
+        if (port) {
+          options.port = mysqlCliPort(port);
+          sawKnownOption = true;
+        }
+      } else if (name === "user" || name === "username") {
+        const username = optionValue();
+        if (username !== undefined) {
+          options.username = username;
+          sawKnownOption = true;
+        }
+      } else if (name === "password") {
+        // A bare `--password` prompts for the password, so keep it empty.
+        options.password = attached ?? (allowDetachedPassword ? detachedValue() ?? "" : "");
+        sawKnownOption = true;
+      } else if (name === "database" || name === "dbname") {
+        const database = optionValue();
+        if (database) {
+          options.database = database;
+          sawKnownOption = true;
+        }
+      } else if (name === "default-character-set" || name === "charset") {
+        const charset = optionValue();
+        if (charset) {
+          options.charset = charset;
+          sawKnownOption = true;
+        }
+      } else if (name === "ssl-mode") {
+        const sslMode = optionValue();
+        if (sslMode) {
+          options.ssl = mysqlCliSslMode(sslMode);
+          sawKnownOption = true;
+        }
+      } else if (name === "ssl") {
+        options.ssl = true;
+        sawKnownOption = true;
+      } else if (name === "skip-ssl" || name === "disable-ssl") {
+        options.ssl = false;
+        sawKnownOption = true;
+      } else if (MYSQL_CLI_IGNORED_VALUE_LONG_OPTIONS.has(name)) {
+        if (attached === undefined) detachedValue();
+      }
+      continue;
+    }
+
+    if (token.startsWith("-") && token.length > 1) {
+      // Boolean short flags may be bundled (`-tA`), so walk until a flag that
+      // takes a value consumes the rest of the token.
+      for (let cursor = 1; cursor < token.length; cursor += 1) {
+        const flag = token[cursor];
+        const attached = token.slice(cursor + 1);
+        if (flag === "p") {
+          options.password = attached || (allowDetachedPassword ? detachedValue() ?? "" : "");
+          sawKnownOption = true;
+          break;
+        }
+        if (!MYSQL_CLI_VALUE_SHORT_FLAGS.has(flag)) continue;
+        const flagValue = attached || detachedValue();
+        if (flagValue === undefined) break;
+        if (flag === "h") {
+          options.host = flagValue;
+          sawKnownOption = true;
+        } else if (flag === "P") {
+          options.port = mysqlCliPort(flagValue);
+          sawKnownOption = true;
+        } else if (flag === "u") {
+          options.username = flagValue;
+          sawKnownOption = true;
+        } else if (flag === "D") {
+          options.database = flagValue;
+          sawKnownOption = true;
+        }
+        break;
+      }
+      continue;
+    }
+
+    positionals.push(token);
+  }
+
+  const firstPositional = positionals[0];
+  if (firstPositional?.includes("://") || /^jdbc:/i.test(firstPositional || "")) {
+    options.dsn = firstPositional;
+  } else if (firstPositional && !options.database) {
+    options.database = firstPositional;
+  }
+
+  if (!sawKnownOption && !options.dsn && !options.database) return null;
+
+  const base = options.dsn ? parseConnectionUrl(options.dsn, preferredProfile) : undefined;
+  const profile = connectionProfileForScheme(cliCommand.scheme, preferredProfile) ?? SCHEME_PROFILES[cliCommand.scheme];
+  const urlParams = mergeMysqlCliUrlParams(base?.urlParams ?? "", options.charset);
+  const dbType = base?.dbType ?? profile.type;
+  const host = options.host ?? base?.host ?? "localhost";
+  const ssl = options.ssl ?? ((base?.ssl ?? false) || urlParamsRequireTls(dbType, urlParams) || (dbType === "mysql" && isTidbCloudHost(host)));
+
+  return {
+    ...(base ?? {}),
+    dbType,
+    driverProfile: base?.driverProfile ?? profile.profile,
+    driverLabel: base?.driverLabel ?? profile.label,
+    host,
+    port: options.port ?? base?.port ?? profile.defaultPort,
+    username: options.username ?? base?.username ?? "",
+    password: options.password ?? base?.password ?? "",
+    database: options.database ?? base?.database,
+    urlParams,
+    ssl,
+  };
+}
+
 export function parseConnectionUrl(value: string, preferredProfile?: string): ParsedConnectionUrl {
   const input = value.trim();
   if (!input) {
     throw new Error("Connection URL is empty");
   }
+  const mysqlCli = parseMysqlCliCommand(input, preferredProfile);
+  if (mysqlCli) return mysqlCli;
   if (/^jdbc:oceanbase:(?:oracle:)?loadbalance:\/\//i.test(input)) {
     throw new Error("Unsupported OceanBase JDBC URL variant: loadbalance");
   }
