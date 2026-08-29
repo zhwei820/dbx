@@ -244,15 +244,9 @@ pub fn build_table_data_select_sql_with_database(
     // are only evidence that a safe default order column exists.
     let known_order_columns =
         if options.columns.is_empty() { &options.fallback_order_columns } else { &options.columns };
-    let id_order_by = known_order_columns
-        .iter()
-        .find(|column| column.eq_ignore_ascii_case("id"))
-        .map(|column| {
-            format!(
-                "{} DESC",
-                quote_table_data_identifier(database_type, column, options.identifier_quote.as_deref())
-            )
-        });
+    let id_order_by = known_order_columns.iter().find(|column| column.eq_ignore_ascii_case("id")).map(|column| {
+        format!("{} DESC", quote_table_data_identifier(database_type, column, options.identifier_quote.as_deref()))
+    });
     let default_order_by = if database_type == Some(DatabaseType::InfluxDb) {
         // InfluxQL only allows sorting of timestamp column
         Some("time DESC".to_string())
