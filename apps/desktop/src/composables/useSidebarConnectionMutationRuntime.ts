@@ -9,6 +9,7 @@ import { translateBackendError } from "@/i18n/backend-errors";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { uuid } from "@/lib/common/utils";
 import { connectionFilePath, defaultSqliteBackupFileName, isMemorySqlitePath, sqliteBackupSourcePath } from "@/lib/connection/connectionFile";
+import { mysqlClientCommandForConnection, replaceConnectionEndpoint, supportsConnectionEndpointReplacement } from "@/lib/connection/connectionEndpointReplace";
 import { hasEnabledTransportLayers } from "@/lib/backend/connectionTransport";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { revealPathInFileManager } from "@/lib/backend/tauri";
@@ -16,7 +17,7 @@ import { canConfigureVisibleSchemasForTreeNode } from "@/lib/database/databaseFe
 import { canCloseSidebarDatabaseConnection } from "@/lib/sidebar/sidebarDatabaseOpenState";
 import { selectedConnectionDeleteTargets, selectedConnectionDisconnectTargets, selectedConnectionDuplicateTargets, selectedConnectionGroupDeleteTargets, selectedConnectionMoveTargets } from "@/lib/sidebar/sidebarConnectionSelection";
 import { releaseConnectionFromMultiSelection } from "@/lib/sidebar/sidebarConnectionMultiSelect";
-import { connectionDeleteTargetSnapshot, connectionGroupDeleteTargetSnapshot, deleteConnectionsWithGroup, showDeleteConfirm, showDeleteGroupConfirm, sidebarFormTarget } from "@/components/sidebar/sidebarTreeDialogState";
+import { connectionDeleteTargetSnapshot, connectionGroupDeleteTargetSnapshot, deleteConnectionsWithGroup, replaceConnectionEndpointError, replaceConnectionEndpointInput, replacingConnectionEndpoint, showDeleteConfirm, showDeleteGroupConfirm, showReplaceConnectionEndpointDialog, sidebarFormTarget } from "@/components/sidebar/sidebarTreeDialogState";
 import { connectionCanConfigureSidebarVisibleDatabases } from "@/lib/sidebar/sidebarVisibleFilterMenu";
 import { disconnectSidebarConnections } from "@/lib/sidebar/sidebarConnectionDisconnect";
 
@@ -159,6 +160,69 @@ export function useSidebarConnectionMutationRuntime(options: SidebarConnectionMu
   function editConnection() {
     const connectionId = activeNode.value.connectionId;
     if (connectionId) connectionStore.startEditing(connectionId);
+  }
+
+  const canReplaceConnectionEndpoint = computed(() => {
+    const node = activeNode.value;
+    if (node.type !== "connection" || !node.connectionId) return false;
+    return supportsConnectionEndpointReplacement(connectionStore.getConfig(node.connectionId));
+  });
+
+  function openReplaceConnectionEndpointDialog() {
+    const connectionId = activeNode.value.connectionId;
+    const config = connectionId ? connectionStore.getConfig(connectionId) : undefined;
+    if (!config) return;
+    // Seed with the connection's own client command so the accepted format is
+    // visible and a single field (port, database, password) can be edited.
+    replaceConnectionEndpointInput.value = mysqlClientCommandForConnection(config);
+    replaceConnectionEndpointError.value = "";
+    showReplaceConnectionEndpointDialog.value = true;
+  }
+
+  function replaceConnectionEndpointFailureMessage(failure: Exclude<ReturnType<typeof replaceConnectionEndpoint>, { ok: true }>): string {
+    if (failure.reason === "empty") return t("connection.replaceEndpointEmpty");
+    if (failure.reason === "db-type-mismatch") return t("connection.replaceEndpointTypeMismatch", { label: failure.driverLabel });
+    return t("connection.parseConnectionUrlFailed", { message: failure.message });
+  }
+
+  async function confirmReplaceConnectionEndpoint() {
+    if (replacingConnectionEndpoint.value) return;
+    const connectionId = activeNode.value.connectionId;
+    const config = connectionId ? connectionStore.getConfig(connectionId) : undefined;
+    if (!connectionId || !config) return;
+
+    const result = replaceConnectionEndpoint(config, replaceConnectionEndpointInput.value);
+    if (!result.ok) {
+      replaceConnectionEndpointError.value = replaceConnectionEndpointFailureMessage(result);
+      return;
+    }
+
+    const wasConnected = connectionStore.connectedIds.has(connectionId);
+    replacingConnectionEndpoint.value = true;
+    try {
+      // Drop the live session before persisting: the running pool still points at
+      // the old endpoint, and reconnecting on top of it would leave it dangling.
+      if (wasConnected) await connectionStore.disconnect(connectionId);
+      await connectionStore.updateConnection({ ...result.config });
+    } catch (error: any) {
+      replaceConnectionEndpointError.value = t("connection.saveFailed", { message: error?.message || String(error) });
+      return;
+    } finally {
+      replacingConnectionEndpoint.value = false;
+    }
+
+    showReplaceConnectionEndpointDialog.value = false;
+    toast(t("connection.replaceEndpointApplied", { target: `${result.config.host}:${result.config.port}` }), 2000);
+    if (!wasConnected) return;
+
+    // The config is already replaced; a failed reconnect is reported like any
+    // other failed open instead of rolling the replacement back.
+    try {
+      await connectionStore.connect({ ...result.config });
+      await connectionStore.loadDatabases(connectionId, { force: true });
+    } catch (error: any) {
+      toast(t("connection.connectFailed", { message: translateBackendError(t, error) }), 5000);
+    }
   }
 
   const revealConnectionFilePath = computed<string | null>(() => {
@@ -439,6 +503,9 @@ export function useSidebarConnectionMutationRuntime(options: SidebarConnectionMu
     copyFinalProxyPort,
     duplicateConnection,
     editConnection,
+    canReplaceConnectionEndpoint,
+    openReplaceConnectionEndpointDialog,
+    confirmReplaceConnectionEndpoint,
     revealConnectionFilePath,
     revealDatabaseFile,
     sqliteBackupSource,
