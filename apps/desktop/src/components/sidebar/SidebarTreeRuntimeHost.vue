@@ -1939,12 +1939,7 @@ function connectionDetailsClipboardText(): string | null {
   // The mysql family round-trips: what is copied here is what "replace
   // connection" accepts back, so both sides share one renderer.
   if (config.db_type === "mysql") return mysqlClientCommandForConnection(config);
-  return [
-    `${t("contextMenu.connectionAddress")}: ${config.host}`,
-    `${t("contextMenu.connectionPort")}: ${config.port || ""}`,
-    `${t("contextMenu.connectionUsername")}: ${config.username}`,
-    `${t("contextMenu.connectionPassword")}: ${password}`,
-  ].join("\n");
+  return [`${t("contextMenu.connectionAddress")}: ${config.host}`, `${t("contextMenu.connectionPort")}: ${config.port || ""}`, `${t("contextMenu.connectionUsername")}: ${config.username}`, `${t("contextMenu.connectionPassword")}: ${password}`].join("\n");
 }
 
 async function copyConnectionDetails() {

@@ -17,7 +17,18 @@ import { canConfigureVisibleSchemasForTreeNode } from "@/lib/database/databaseFe
 import { canCloseSidebarDatabaseConnection } from "@/lib/sidebar/sidebarDatabaseOpenState";
 import { selectedConnectionDeleteTargets, selectedConnectionDisconnectTargets, selectedConnectionDuplicateTargets, selectedConnectionGroupDeleteTargets, selectedConnectionMoveTargets } from "@/lib/sidebar/sidebarConnectionSelection";
 import { releaseConnectionFromMultiSelection } from "@/lib/sidebar/sidebarConnectionMultiSelect";
-import { connectionDeleteTargetSnapshot, connectionGroupDeleteTargetSnapshot, deleteConnectionsWithGroup, replaceConnectionEndpointError, replaceConnectionEndpointInput, replacingConnectionEndpoint, showDeleteConfirm, showDeleteGroupConfirm, showReplaceConnectionEndpointDialog, sidebarFormTarget } from "@/components/sidebar/sidebarTreeDialogState";
+import {
+  connectionDeleteTargetSnapshot,
+  connectionGroupDeleteTargetSnapshot,
+  deleteConnectionsWithGroup,
+  replaceConnectionEndpointError,
+  replaceConnectionEndpointInput,
+  replacingConnectionEndpoint,
+  showDeleteConfirm,
+  showDeleteGroupConfirm,
+  showReplaceConnectionEndpointDialog,
+  sidebarFormTarget,
+} from "@/components/sidebar/sidebarTreeDialogState";
 import { connectionCanConfigureSidebarVisibleDatabases } from "@/lib/sidebar/sidebarVisibleFilterMenu";
 import { disconnectSidebarConnections } from "@/lib/sidebar/sidebarConnectionDisconnect";
 
