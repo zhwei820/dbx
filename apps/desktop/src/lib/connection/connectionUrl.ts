@@ -839,7 +839,11 @@ function parseMysqlCliCommand(value: string, preferredProfile?: string): ParsedC
   for (; index < tokens.length; index += 1) {
     const token = tokens[index];
 
-    if (token === "--") continue;
+    if (token === "--") {
+      // Everything after `--` is positional, never an option.
+      positionals.push(...tokens.slice(index + 1));
+      break;
+    }
 
     if (token.startsWith("--")) {
       const body = token.slice(2);

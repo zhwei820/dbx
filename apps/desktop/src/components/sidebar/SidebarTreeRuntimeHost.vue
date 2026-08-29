@@ -85,6 +85,7 @@ import { mysqlObjectTemplateForGroup } from "@/lib/sidebar/mysqlObjectTemplates"
 import { buildTableDeleteTemplate, buildTableInsertTemplate, buildTableSelectTemplate, buildTableUpdateTemplate } from "@/lib/table/tableSqlTemplates";
 import { qualifiedTableName } from "@/lib/table/tableSelectSql";
 import { driverStoreFocusForInstallError } from "@/lib/connection/agentDriverInstallHint";
+import { mysqlClientCommandForConnection } from "@/lib/connection/connectionEndpointReplace";
 import {
   canCreateConnectionNamespace,
   canCreateDatabaseNodeNamespace,
@@ -313,6 +314,10 @@ import {
   deleteConnectionsWithGroup,
   showMoveToNewGroupDialog,
   moveToNewGroupName,
+  showReplaceConnectionEndpointDialog,
+  replaceConnectionEndpointInput,
+  replaceConnectionEndpointError,
+  replacingConnectionEndpoint,
   type DuplicateStructureSource,
 } from "./sidebarTreeDialogState";
 
@@ -420,6 +425,9 @@ const {
   copyFinalProxyPort,
   duplicateConnection,
   editConnection,
+  canReplaceConnectionEndpoint,
+  openReplaceConnectionEndpointDialog,
+  confirmReplaceConnectionEndpoint,
   revealConnectionFilePath,
   revealDatabaseFile,
   canBackupSqliteDatabase,
@@ -1923,24 +1931,14 @@ async function copyName() {
   }
 }
 
-function shellQuoteCliValue(value: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
 function connectionDetailsClipboardText(): string | null {
   const connectionId = activeNode.value.connectionId;
   const config = connectionId ? connectionStore.getConfig(connectionId) : undefined;
   if (!config) return null;
   const password = config.save_password === false ? "" : config.password;
-  if (config.db_type === "mysql") {
-    const args = ["mycli"];
-    if (config.host) args.push(`-h${shellQuoteCliValue(config.host)}`);
-    if (config.port > 0) args.push(`-P${config.port}`);
-    if (config.username) args.push(`-u${shellQuoteCliValue(config.username)}`);
-    if (password) args.push(`-p${shellQuoteCliValue(password)}`);
-    return args.join(" ");
-  }
+  // The mysql family round-trips: what is copied here is what "replace
+  // connection" accepts back, so both sides share one renderer.
+  if (config.db_type === "mysql") return mysqlClientCommandForConnection(config);
   return [
     `${t("contextMenu.connectionAddress")}: ${config.host}`,
     `${t("contextMenu.connectionPort")}: ${config.port || ""}`,
@@ -4573,6 +4571,11 @@ function connectionDialogCapabilities() {
     connectionGroupDeleteMenuLabel,
     deletingConnectionGroups,
     confirmDeleteGroup,
+    showReplaceConnectionEndpointDialog,
+    replaceConnectionEndpointInput,
+    replaceConnectionEndpointError,
+    replacingConnectionEndpoint,
+    confirmReplaceConnectionEndpoint,
   };
 }
 
@@ -4992,6 +4995,9 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
       });
     }
     items.push({ label: t("contextMenu.editConnection"), action: editConnection, icon: Pencil, shortcut: shortcutEditConnection.value });
+    if (canReplaceConnectionEndpoint.value) {
+      items.push({ label: t("contextMenu.replaceConnectionEndpoint"), action: openReplaceConnectionEndpointDialog, icon: ArrowRightLeft });
+    }
     if (revealConnectionFilePath.value) {
       items.push({
         label: t("contextMenu.revealDatabaseFile"),

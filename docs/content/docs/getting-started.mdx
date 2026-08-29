@@ -165,6 +165,8 @@ Desktop and Web share most database workflows and the Rust core, but their local
 
     DBX can parse common connection URLs for engines such as MySQL, PostgreSQL, Redis, MongoDB, ClickHouse, SQL Server, Oracle, Elasticsearch, Easysearch, Meilisearch, DM, GaussDB, openGauss, TDengine, and Access. Review the parsed fields before saving.
 
+    The same field also accepts a mysql-family client command, such as `mycli -hlocalhost -P32804 -uroot -p123456 tms` or `mysql -h db -P 3306 -u root -psecret shop`, so a command you already have in a terminal can be pasted as is.
+
   </Step>
   <Step>
     ### Add Network Options

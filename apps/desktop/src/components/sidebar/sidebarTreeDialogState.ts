@@ -183,6 +183,10 @@ export const schemaCommentPreviewSql = ref("");
 export const showDeleteGroupConfirm = ref(false);
 export const showMoveToNewGroupDialog = ref(false);
 export const moveToNewGroupName = ref("");
+export const showReplaceConnectionEndpointDialog = ref(false);
+export const replaceConnectionEndpointInput = ref("");
+export const replaceConnectionEndpointError = ref("");
+export const replacingConnectionEndpoint = ref(false);
 
 const openFlags = [
   showDeleteConfirm,
@@ -221,6 +225,7 @@ const openFlags = [
   showEditSchemaCommentDialog,
   showDeleteGroupConfirm,
   showMoveToNewGroupDialog,
+  showReplaceConnectionEndpointDialog,
 ];
 
 export function resetSidebarTreeDialogState() {
@@ -248,4 +253,7 @@ export function resetSidebarTreeDialogState() {
   connectionDeleteTargetSnapshot.value = [];
   connectionGroupDeleteTargetSnapshot.value = [];
   deleteConnectionsWithGroup.value = false;
+  replaceConnectionEndpointInput.value = "";
+  replaceConnectionEndpointError.value = "";
+  replacingConnectionEndpoint.value = false;
 }

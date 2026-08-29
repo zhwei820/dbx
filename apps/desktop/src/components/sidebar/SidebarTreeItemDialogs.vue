@@ -28,6 +28,11 @@ const {
   connectionGroupDeleteMenuLabel,
   deletingConnectionGroups,
   confirmDeleteGroup,
+  showReplaceConnectionEndpointDialog,
+  replaceConnectionEndpointInput,
+  replaceConnectionEndpointError,
+  replacingConnectionEndpoint,
+  confirmReplaceConnectionEndpoint,
   showRenameObjectDialog,
   renameObjectName,
   renameObjectDialogTitle,
@@ -189,6 +194,7 @@ watch(
     showDeleteConfirm,
     showMoveToNewGroupDialog,
     showDeleteGroupConfirm,
+    showReplaceConnectionEndpointDialog,
     showRenameObjectDialog,
     showStructurePreviewDialog,
     showStructureDocCopyDialog,
@@ -267,6 +273,36 @@ watch(
         <Button variant="destructive" :disabled="deletingConnectionGroups" @click="confirmDeleteGroup">
           <Loader2 v-if="deletingConnectionGroups" class="mr-2 h-4 w-4 animate-spin" />
           {{ connectionGroupDeleteMenuLabel() }}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="showReplaceConnectionEndpointDialog">
+    <DialogContent class="sm:max-w-[520px]">
+      <DialogHeader>
+        <DialogTitle>{{ t("connection.replaceEndpointTitle") }}</DialogTitle>
+      </DialogHeader>
+      <div class="grid gap-3">
+        <p class="text-xs leading-relaxed text-muted-foreground">{{ t("connection.replaceEndpointDescription") }}</p>
+        <textarea
+          v-model="replaceConnectionEndpointInput"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          class="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring/40"
+          :placeholder="t('connection.replaceEndpointPlaceholder')"
+          :disabled="replacingConnectionEndpoint"
+          @keydown.meta.enter.prevent="confirmReplaceConnectionEndpoint"
+          @keydown.ctrl.enter.prevent="confirmReplaceConnectionEndpoint"
+        ></textarea>
+        <p v-if="replaceConnectionEndpointError" class="min-w-0 break-words text-sm text-destructive [overflow-wrap:anywhere]">{{ replaceConnectionEndpointError }}</p>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" :disabled="replacingConnectionEndpoint" @click="showReplaceConnectionEndpointDialog = false">{{ t("dangerDialog.cancel") }}</Button>
+        <Button :disabled="replacingConnectionEndpoint || !replaceConnectionEndpointInput.trim()" @click="confirmReplaceConnectionEndpoint">
+          <Loader2 v-if="replacingConnectionEndpoint" class="mr-2 h-4 w-4 animate-spin" />
+          {{ t("connection.replaceEndpointApply") }}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -91,7 +91,12 @@ describe("mysql-family CLI commands", () => {
 
   it("accepts an absolute command path", () => {
     expect(parseConnectionUrl("/usr/local/mysql/bin/mysql -hdb -uroot -ppw")).toMatchObject({ host: "db", username: "root", password: "pw" });
-    expect(parseConnectionUrl("C:\\Program Files\\MySQL\\bin\\mysql.exe -hdb -uroot")).toMatchObject({ host: "db", username: "root" });
+    expect(parseConnectionUrl("C:\\mysql\\bin\\mysql.exe -hdb -uroot")).toMatchObject({ host: "db", username: "root" });
+    expect(parseConnectionUrl(`"C:\\Program Files\\MySQL\\bin\\mysql.exe" -hdb -uroot`)).toMatchObject({ host: "db", username: "root" });
+  });
+
+  it("unescapes a backslash-escaped space", () => {
+    expect(parseConnectionUrl("mysql -hdb -uroot -pmy\\ pass")).toMatchObject({ password: "my pass" });
   });
 
   it("strips a copied shell prompt marker", () => {
@@ -101,6 +106,14 @@ describe("mysql-family CLI commands", () => {
   it("does not mistake the value of an unrelated option for the database", () => {
     expect(parseConnectionUrl("mysql -e 'select 1' -h db -u root -ppw")).toMatchObject({ host: "db", username: "root", database: undefined });
     expect(parseConnectionUrl("mysql --socket /tmp/mysql.sock -u root -ppw shop")).toMatchObject({ username: "root", database: "shop" });
+  });
+
+  it("follows the mysql client rule that a bare -p never swallows the database", () => {
+    expect(parseConnectionUrl("mysql -h db -u root -p shop")).toMatchObject({ host: "db", username: "root", password: "", database: "shop" });
+  });
+
+  it("treats everything after -- as positional", () => {
+    expect(parseConnectionUrl("mysql -uroot -ppw -- shop")).toMatchObject({ username: "root", password: "pw", database: "shop" });
   });
 
   it("ignores bundled boolean flags", () => {
