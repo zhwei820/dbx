@@ -92,6 +92,7 @@ import { dataGridCellDisplayText, dataGridCellEditorText } from "@/lib/dataGrid/
 import { createColumnDrafts } from "@/lib/table/tableStructureEditorState";
 import type { BuildSingleColumnAlterSqlOptions } from "@/lib/table/tableStructureEditorSql";
 import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
+import { shortcutKeyLabel } from "@/lib/editor/shortcutDisplay";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind } from "@/lib/dataGrid/cellValueGeneration";
 import { compactHeaderColumnType, isNumericColumnType, resolveDataGridTypeVisualKind, resolveHeaderColumnType, resolveResultColumnType } from "@/lib/dataGrid/dataGridColumnType";
@@ -7895,9 +7896,9 @@ async function cancelActiveExport() {
 const userFacingSql = ref("");
 let userFacingSqlGeneration = 0;
 
-function sqlWithDisplayDatabaseName(sql: string): string {
+function sqlWithDisplayDatabaseName(sql: string, includeDatabaseName: boolean): string {
   const database = props.tableMeta?.database ?? props.database;
-  if (!settingsStore.editorSettings.generateSqlIncludeDatabaseName || !database) return sql;
+  if (!includeDatabaseName || !database) return sql;
   return qualifyTableReferencesInSql(sql, {
     databaseType: resolvedDatabaseType.value,
     database,
@@ -7905,14 +7906,11 @@ function sqlWithDisplayDatabaseName(sql: string): string {
   });
 }
 
-async function syncUserFacingSql() {
-  const generation = ++userFacingSqlGeneration;
+async function buildUserFacingSql(includeDatabaseName: boolean): Promise<string> {
   const executionSql = props.sql?.trim() ?? "";
-  const includeDatabaseName = settingsStore.editorSettings.generateSqlIncludeDatabaseName;
   const shouldRebuildSql = executionSql.includes("__DBX_LARGE_VALUE_BYTES_") || includeDatabaseName;
   if (props.context !== "table-data" || !shouldRebuildSql || !props.tableMeta?.tableName) {
-    userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
-    return;
+    return sqlWithDisplayDatabaseName(executionSql, includeDatabaseName);
   }
 
   try {
@@ -7932,10 +7930,16 @@ async function syncUserFacingSql() {
       limit: props.pageLimit ?? pageSize.value,
       offset: props.pageOffset ?? Math.max(0, currentPage.value - 1) * pageSize.value,
     });
-    if (generation === userFacingSqlGeneration) userFacingSql.value = sqlWithDisplayDatabaseName(sql);
+    return sqlWithDisplayDatabaseName(sql, includeDatabaseName);
   } catch {
-    if (generation === userFacingSqlGeneration) userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
+    return sqlWithDisplayDatabaseName(executionSql, includeDatabaseName);
   }
+}
+
+async function syncUserFacingSql() {
+  const generation = ++userFacingSqlGeneration;
+  const sql = await buildUserFacingSql(settingsStore.editorSettings.generateSqlIncludeDatabaseName);
+  if (generation === userFacingSqlGeneration) userFacingSql.value = sql;
 }
 
 watch(
@@ -10468,9 +10472,14 @@ function onRowContext(rowId: number, rowIndex: number) {
 }
 
 const sqlOneLiner = computed(() => userFacingSql.value.replace(/\s+/g, " ").trim());
+const copySqlModifierLabel = shortcutKeyLabel("Mod");
 
-async function copyUserFacingSql() {
-  if (userFacingSql.value) await copyText(userFacingSql.value);
+// Plain click copies the SQL exactly as shown; Cmd/Ctrl + click copies the variant
+// whose table references carry the full database name, regardless of the
+// `generateSqlIncludeDatabaseName` setting.
+async function copyUserFacingSql(event?: MouseEvent) {
+  const sql = event?.metaKey || event?.ctrlKey ? await buildUserFacingSql(true) : userFacingSql.value;
+  if (sql) await copyText(sql);
 }
 
 type TableInfoTabItem = {
@@ -14126,6 +14135,7 @@ function openGridSnapshot() {
         </TooltipTrigger>
         <TooltipContent side="top" class="max-w-md">
           <pre class="text-xs font-mono whitespace-pre-wrap">{{ userFacingSql }}</pre>
+          <p class="mt-1 text-[11px] opacity-70">{{ t("grid.copySqlHint", { mod: copySqlModifierLabel }) }}</p>
         </TooltipContent>
       </Tooltip>
       <span v-else class="min-w-0" />

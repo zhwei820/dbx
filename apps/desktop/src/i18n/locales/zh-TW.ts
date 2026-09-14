@@ -1572,6 +1572,7 @@ export default withEnglishFallback({
     filterSqlPreviewEmpty: "尚未產生有效的篩選條件",
     filterSqlPreviewReady: "條件已就緒，套用後重新整理結果",
     copyFilterSql: "複製 SQL 條件",
+    copySqlHint: "點擊複製 SQL · {mod} + 點擊複製帶資料庫名稱的 SQL",
     filterSqlCopied: "SQL 條件已複製",
     filterBuilderSummary: "{count} 條規則",
     filterBuilderAddRule: "新增條件",

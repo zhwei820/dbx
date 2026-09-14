@@ -1564,6 +1564,7 @@ export default withEnglishFallback({
     filterSqlPreviewEmpty: "아직 유효한 필터 조건이 없습니다",
     filterSqlPreviewReady: "조건이 준비되었습니다. 적용하면 결과가 새로 고쳐집니다",
     copyFilterSql: "SQL 조건 복사",
+    copySqlHint: "클릭하면 SQL 복사 · {mod} + 클릭하면 데이터베이스 이름이 포함된 SQL 복사",
     filterSqlCopied: "SQL 조건을 복사했습니다",
     filterBuilderSummary: "{count}개 규칙",
     filterBuilderAddRule: "규칙 추가",

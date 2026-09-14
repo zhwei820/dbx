@@ -580,7 +580,8 @@ export default withEnglishFallback({
     parseConnectionUrlApplied: "URL de conexión aplicada",
     parseConnectionUrlFailed: "Error al analizar la URL de conexión: {message}",
     replaceEndpointTitle: "Reemplazar datos de conexión",
-    replaceEndpointDescription: "Pega un comando de cliente de la familia mysql o una URL de conexión. Se reemplazan host, puerto, usuario, contraseña y base de datos; el nombre de la conexión, el controlador, el túnel SSH y demás ajustes avanzados se mantienen. Si el comando omite el usuario o la contraseña, se conservan los configurados.",
+    replaceEndpointDescription:
+      "Pega un comando de cliente de la familia mysql o una URL de conexión. Se reemplazan host, puerto, usuario, contraseña y base de datos; el nombre de la conexión, el controlador, el túnel SSH y demás ajustes avanzados se mantienen. Si el comando omite el usuario o la contraseña, se conservan los configurados.",
     replaceEndpointPlaceholder: "mycli -hlocalhost -P32883 -uroot -p123456 tms",
     replaceEndpointApply: "Reemplazar y reconectar",
     replaceEndpointApplied: "La conexión ahora apunta a {target}",
@@ -1573,6 +1574,7 @@ export default withEnglishFallback({
     filterSqlPreviewEmpty: "Aún no hay una condición de filtro válida",
     filterSqlPreviewReady: "Condición lista; aplícala para actualizar los resultados",
     copyFilterSql: "Copiar condición SQL",
+    copySqlHint: "Haz clic para copiar el SQL · {mod} + clic para copiarlo con el nombre de la base de datos",
     filterSqlCopied: "Condición SQL copiada",
     filterBuilderSummary: "{count} reglas",
     filterBuilderAddRule: "Agregar regla",

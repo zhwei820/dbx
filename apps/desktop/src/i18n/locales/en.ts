@@ -1691,6 +1691,7 @@ export default {
     filterSqlPreviewEmpty: "No valid filter condition yet",
     filterSqlPreviewReady: "Condition ready; apply to refresh results",
     copyFilterSql: "Copy SQL condition",
+    copySqlHint: "Click to copy SQL · {mod} + click to copy with the database name",
     filterSqlCopied: "SQL condition copied",
     filterBuilderSummary: "{count} rules",
     filterBuilderAddRule: "Add rule",

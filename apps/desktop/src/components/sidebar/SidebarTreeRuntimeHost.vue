@@ -116,7 +116,7 @@ import { mongoCollectionTableTypeFromNode, mongoDropIndexFailureCount } from "@/
 import { dataTabOpenModeFromTreeClick, type DataTabOpenMode } from "@/lib/sidebar/dataTabOpenPolicy";
 import { isCopySidebarSelectionShortcut, isEditSidebarConnectionShortcut, isPasteSidebarSelectionShortcut } from "@/lib/editor/keyboardShortcuts";
 import { handleSidebarTreeDeleteShortcut } from "@/lib/sidebar/sidebarTreeDeleteShortcut";
-import { dataTableDoubleClickAction } from "@/lib/tabs/dataTabActivation";
+import { canAutoRefreshReopenedDataTab, dataTableDoubleClickAction } from "@/lib/tabs/dataTabActivation";
 import { attachedDatabaseNameFromPath, buildCreateDatabaseSql, buildDuckDbAttachDatabaseSql, buildSqliteAttachDatabaseSql, supportsCreateDatabaseCharset, uniqueAttachedDatabaseName } from "@/lib/database/createDatabaseSql";
 import { appendCreateDatabaseErrorHint } from "@/lib/database/createDatabaseErrorHints";
 import { SQLITE_DATABASE_FILE_EXTENSIONS } from "@/lib/database/databaseFileDetection";
@@ -1401,9 +1401,13 @@ function activateDataTableFromDoubleClick() {
     return;
   }
   if (!existingSameTableTab) return;
-  // Reopening an available table follows DBeaver's editor reuse model: only
-  // activate the existing tab so filters, result rows, and in-flight work stay intact.
+  // Reopening an available table follows DBeaver's editor reuse model: the tab
+  // itself is reused so filters and in-flight work stay intact. The rows are
+  // then re-queried so a reopen always shows current data (refreshDataTab keeps
+  // the tab's whereInput / sort / page offset), except when the tab is busy or
+  // holds uncommitted edits — see canAutoRefreshReopenedDataTab.
   queryStore.switchTab(existingSameTableTab.id);
+  if (canAutoRefreshReopenedDataTab(existingSameTableTab)) void queryStore.refreshDataTab(existingSameTableTab.id);
 }
 
 function findExistingSameTableDataTab() {

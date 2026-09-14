@@ -1616,6 +1616,7 @@ export default withEnglishFallback({
     filterSqlPreviewEmpty: "尚未生成有效筛选条件",
     filterSqlPreviewReady: "条件已就绪，应用后刷新结果",
     copyFilterSql: "复制 SQL 条件",
+    copySqlHint: "点击复制 SQL · {mod} + 点击复制带数据库名的 SQL",
     filterSqlCopied: "SQL 条件已复制",
     filterBuilderSummary: "{count} 条规则",
     filterBuilderAddRule: "新增条件",

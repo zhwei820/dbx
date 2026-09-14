@@ -1589,6 +1589,7 @@ export default withEnglishFallback({
     filterSqlPreviewEmpty: "有効なフィルター条件はまだありません",
     filterSqlPreviewReady: "条件の準備完了。適用すると結果を更新します",
     copyFilterSql: "SQL 条件をコピー",
+    copySqlHint: "クリックで SQL をコピー · {mod} + クリックでデータベース名付きの SQL をコピー",
     filterSqlCopied: "SQL 条件をコピーしました",
     filterBuilderSummary: "{count}件のルール",
     filterBuilderAddRule: "ルールを追加",

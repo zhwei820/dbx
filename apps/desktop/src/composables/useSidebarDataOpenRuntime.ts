@@ -14,7 +14,7 @@ import { buildTableSelectSql } from "@/lib/table/tableSelectSql";
 import { usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { tableDataLargeValuePreviewOptions } from "@/lib/dataGrid/dataGridLargeValues";
-import { canActivateExistingDataTableTab } from "@/lib/tabs/dataTabActivation";
+import { canActivateExistingDataTableTab, canAutoRefreshReopenedDataTab } from "@/lib/tabs/dataTabActivation";
 import { beginDataTabNavigation, endDataTabNavigation, isCurrentDataTabNavigation } from "@/lib/tabs/dataTabNavigationGeneration";
 
 const DATA_TAB_METADATA_TTL_MS = TABLE_METADATA_CACHE_TTL_MS;
@@ -184,6 +184,13 @@ export function useSidebarDataOpenRuntime() {
         if (!existingSameTableTab.tableMeta?.columns.length) existingSameTableTab.tableMetaPending = true;
         void refreshTableMetaInBackground(existingSameTableTab.id, true);
         logPhase("metadata-started", { tabId: existingSameTableTab.id, reason: "existing-tab-stale" });
+      }
+      // 重新点击树上已打开的表：激活之后自动重跑当前查询，用户不必再点一次
+      // 刷新按钮。refreshDataTab 沿用 tab 现有的 whereInput / 排序 / 分页偏移，
+      // 因此过滤条件与所在页码保持不变，只有行数据换成最新的。
+      if (canAutoRefreshReopenedDataTab(existingSameTableTab)) {
+        void queryStore.refreshDataTab(existingSameTableTab.id);
+        logPhase("existing-tab-refresh-started", { tabId: existingSameTableTab.id });
       }
       return;
     }

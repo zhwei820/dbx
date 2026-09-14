@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   buildTableSelectSql: vi.fn(),
   setErrorResult: vi.fn(),
   cancelTabExecution: vi.fn(),
+  refreshDataTab: vi.fn(),
+  canActivateExistingDataTableTab: false,
 }));
 
 vi.mock("@/stores/connectionStore", () => ({
@@ -91,6 +93,7 @@ vi.mock("@/stores/queryStore", () => ({
     },
     executeTabSql: mocks.executeTabSql,
     setErrorResult: mocks.setErrorResult,
+    refreshDataTab: mocks.refreshDataTab,
   }),
 }));
 
@@ -120,7 +123,11 @@ vi.mock("@/lib/sidebar/treeNodeContext", () => ({ hasTreeNodeDatabaseContext: ()
 vi.mock("@/lib/table/tableSelectSql", () => ({ buildTableSelectSql: mocks.buildTableSelectSql }));
 vi.mock("@/lib/table/tableEditing", () => ({ usesSyntheticRowIdKey: () => false }));
 vi.mock("@/lib/table/tableOpenPageLimit", () => ({ tableOpenPageLimit: () => 100 }));
-vi.mock("@/lib/tabs/dataTabActivation", () => ({ canActivateExistingDataTableTab: () => false }));
+// canAutoRefreshReopenedDataTab 用真实实现（重开自动刷新的前置条件即被测行为）
+vi.mock("@/lib/tabs/dataTabActivation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tabs/dataTabActivation")>();
+  return { ...actual, canActivateExistingDataTableTab: () => mocks.canActivateExistingDataTableTab };
+});
 
 const tableNode: TreeNode = {
   id: "table-users",
@@ -131,6 +138,32 @@ const tableNode: TreeNode = {
   schema: "public",
   tableType: "TABLE",
 };
+
+/** 一个已经打开、元数据新鲜（代次 0）、空闲可激活的 users 数据标签页 */
+function openedUsersDataTab(): QueryTab {
+  return {
+    id: "existing-tab",
+    connectionId: "connection-1",
+    database: "app",
+    title: "users",
+    mode: "data",
+    schema: "public",
+    sql: "SELECT * FROM users",
+    isDirty: false,
+    isExecuting: false,
+    isCancelling: false,
+    isExplaining: false,
+    tableMeta: {
+      schema: "public",
+      tableName: "users",
+      tableType: "TABLE",
+      columns: [{ name: "id", data_type: "bigint", is_nullable: false, column_default: null, is_primary_key: true, extra: null }],
+      primaryKeys: ["id"],
+    },
+    tableMetaUpdatedAt: Date.now(),
+    tableMetaGeneration: 0,
+  } as QueryTab;
+}
 
 const mysqlTableNode: TreeNode = {
   ...tableNode,
@@ -151,6 +184,7 @@ describe("useSidebarDataOpenRuntime", () => {
     mocks.dataTabReuseMode = "same-table";
     mocks.openDataTabsNextToActive = false;
     mocks.metadataGeneration = 0;
+    mocks.canActivateExistingDataTableTab = false;
     mocks.ensureConnected.mockResolvedValue(undefined);
     mocks.buildTableSelectSql.mockResolvedValue("SELECT * FROM users");
     mocks.executeTabSql.mockImplementation(async () => {
@@ -551,6 +585,34 @@ describe("useSidebarDataOpenRuntime", () => {
     expect(mocks.cancelTabExecution).not.toHaveBeenCalled();
     expect(mocks.executeTabSql).not.toHaveBeenCalled();
     expect(mocks.loadTableMetadata).not.toHaveBeenCalled();
+    // 在途查询不打断：重开自动刷新让位给已经在跑的那次执行
+    expect(mocks.refreshDataTab).not.toHaveBeenCalled();
+  });
+
+  it("refreshes rows when an already-open same-table tab is reopened from the tree", async () => {
+    mocks.canActivateExistingDataTableTab = true;
+    mocks.tabs.push(openedUsersDataTab());
+    mocks.activeTabId = null;
+
+    await useSidebarDataOpenRuntime().openData(tableNode);
+
+    // tab 被复用（不新建、不重建 SQL），只是重跑一次当前查询
+    expect(mocks.tabs).toHaveLength(1);
+    expect(mocks.activeTabId).toBe("existing-tab");
+    expect(mocks.executeTabSql).not.toHaveBeenCalled();
+    expect(mocks.refreshDataTab).toHaveBeenCalledWith("existing-tab");
+  });
+
+  it("skips the reopen refresh when the tab holds uncommitted data changes", async () => {
+    mocks.canActivateExistingDataTableTab = true;
+    mocks.tabs.push({ ...openedUsersDataTab(), txnSessionId: "txn-1", pendingDataChangeCount: 2 } as QueryTab);
+    mocks.activeTabId = null;
+
+    await useSidebarDataOpenRuntime().openData(tableNode);
+
+    expect(mocks.activeTabId).toBe("existing-tab");
+    // 重跑查询会静默丢弃未提交改动：只激活，不刷新
+    expect(mocks.refreshDataTab).not.toHaveBeenCalled();
   });
 
   it("does not mark row identity pending on a warm metadata cache", async () => {
