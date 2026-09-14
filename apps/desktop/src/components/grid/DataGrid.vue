@@ -7925,6 +7925,11 @@ async function buildUserFacingSql(includeDatabaseName: boolean): Promise<string>
       tableName: props.tableMeta.tableName,
       tableType: props.tableMeta.tableType,
       includeDatabaseName,
+      // 页脚 SQL 刻意不投影列（保持 SELECT *，抹掉大字段预览的 LEFT/CONCAT），
+      // 但 builder 的默认排序是从已知列里找 id 推出来的；列全丢掉会让重建出的
+      // SQL 少掉执行时真实带上的 ORDER BY `id` DESC。fallbackOrderColumns 只做
+      // 排序依据、不进投影，正好用来补回这个默认排序。
+      fallbackOrderColumns: props.tableMeta.columns.map((column) => column.name),
       whereInput: currentWhereInput(),
       orderBy: currentOrderBy(),
       limit: props.pageLimit ?? pageSize.value,
