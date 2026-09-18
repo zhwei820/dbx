@@ -3,6 +3,7 @@ import {
   DBX_NEO4J_ELEMENT_ID_COLUMN,
   DBX_ROWID_COLUMN,
   DBX_TDENGINE_TBNAME_COLUMN,
+  canInsertTableRows,
   canDeleteExistingTdengineRows,
   canEditExistingTableRows,
   canUseKeylessRowPredicate,
@@ -10,9 +11,11 @@ import {
   editableRowIdentifierColumns,
   hasCompleteTdengineRowIdentity,
   isClickHouseExistingRowReadonlyColumn,
+  isHiddenGridColumn,
   isTdengineExistingRowReadonlyColumn,
   isTableDataEditable,
   supportsDataGridTransaction,
+  shouldIncludeSyntheticRowId,
   usesSyntheticRowIdKey,
 } from "@/lib/table/tableEditing";
 import type { ColumnInfo, IndexInfo } from "@/types/database";
@@ -40,10 +43,41 @@ function index(columns: string[], isUnique = true, filter: string | null = null)
 
 describe("tableEditing", () => {
   it("synthesizes ROWID only for Oracle-compatible base tables", () => {
+    expect(editablePrimaryKeys("oracle", [column("ID"), column("NAME")])).toEqual([]);
     expect(editablePrimaryKeys("oracle", [column("ID"), column("NAME")], "VIEW")).toEqual([]);
     expect(editablePrimaryKeys("oracle", [column("ID"), column("NAME")], "TABLE")).toEqual([DBX_ROWID_COLUMN]);
     expect(editablePrimaryKeys("oceanbase-oracle", [column("ID"), column("NAME")], "TABLE")).toEqual([DBX_ROWID_COLUMN]);
     expect(editablePrimaryKeys("oceanbase-oracle", [column("ID", true), column("NAME")], "TABLE")).toEqual(["ID"]);
+  });
+
+  it("uses Xugu ROWID for ordinary, partitioned, and temporary tables but not views", () => {
+    const columns = [column("ID"), column("VALUE")];
+    expect(editablePrimaryKeys("xugu", columns, "TABLE")).toEqual([DBX_ROWID_COLUMN]);
+    expect(editablePrimaryKeys("xugu", columns, "PARTITIONED TABLE")).toEqual([DBX_ROWID_COLUMN]);
+    expect(editablePrimaryKeys("xugu", columns, "TEMPORARY TABLE")).toEqual([DBX_ROWID_COLUMN]);
+    expect(editablePrimaryKeys("xugu", columns, "VIEW")).toEqual([]);
+    expect(usesSyntheticRowIdKey("xugu", [DBX_ROWID_COLUMN], "TABLE")).toBe(true);
+    expect(usesSyntheticRowIdKey("xugu", [DBX_ROWID_COLUMN], "PARTITIONED TABLE")).toBe(true);
+    expect(usesSyntheticRowIdKey("xugu", [DBX_ROWID_COLUMN], "TEMPORARY TABLE")).toBe(true);
+    expect(usesSyntheticRowIdKey("xugu", [DBX_ROWID_COLUMN], "VIEW")).toBe(false);
+    expect(isTableDataEditable("xugu", [DBX_ROWID_COLUMN], "TABLE")).toBe(true);
+    expect(isTableDataEditable("xugu", [DBX_ROWID_COLUMN], "VIEW")).toBe(false);
+    expect(canInsertTableRows("xugu")).toBe(true);
+  });
+
+  it("includes Xugu ROWID while cold table metadata has no declared primary keys", () => {
+    expect(shouldIncludeSyntheticRowId("xugu", [], "TABLE")).toBe(true);
+    expect(shouldIncludeSyntheticRowId("xugu", [], "PARTITIONED TABLE")).toBe(true);
+    expect(shouldIncludeSyntheticRowId("xugu", [], "TEMPORARY TABLE")).toBe(true);
+    expect(shouldIncludeSyntheticRowId("xugu", [], "VIEW")).toBe(false);
+    expect(shouldIncludeSyntheticRowId("oracle", [], "TABLE")).toBe(false);
+  });
+
+  it("keeps Xugu's internal ROWID hidden after primary-key metadata arrives", () => {
+    expect(isHiddenGridColumn("xugu", DBX_ROWID_COLUMN, ["ID"], "TABLE")).toBe(true);
+    expect(isHiddenGridColumn("xugu", DBX_ROWID_COLUMN, [], "TABLE")).toBe(true);
+    expect(isHiddenGridColumn("xugu", DBX_ROWID_COLUMN, ["ID"], "VIEW")).toBe(false);
+    expect(isHiddenGridColumn("xugu", "ID", ["ID"], "TABLE")).toBe(false);
   });
 
   it("treats view data tabs as readonly", () => {
@@ -57,6 +91,9 @@ describe("tableEditing", () => {
   });
 
   it("does not include Oracle ROWID for view data tabs", () => {
+    expect(usesSyntheticRowIdKey("oracle", [DBX_ROWID_COLUMN])).toBe(true);
+    expect(shouldIncludeSyntheticRowId("oracle", [DBX_ROWID_COLUMN])).toBe(false);
+    expect(shouldIncludeSyntheticRowId("oracle", [DBX_ROWID_COLUMN], "TABLE")).toBe(true);
     expect(usesSyntheticRowIdKey("oracle", [DBX_ROWID_COLUMN], "VIEW")).toBe(false);
     expect(usesSyntheticRowIdKey("oracle", [DBX_ROWID_COLUMN], "MATERIALIZED_VIEW")).toBe(false);
     expect(usesSyntheticRowIdKey("oceanbase-oracle", [DBX_ROWID_COLUMN], "TABLE")).toBe(true);

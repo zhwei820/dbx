@@ -75,6 +75,16 @@ function expectClassTokens(className: string, tokens: readonly string[]) {
 }
 
 describe("EditorSettingsDialog choice card containment", () => {
+  it("shows the persistent filter-editor preference only for fixed filter views", () => {
+    const key = 't("settings.dataGridKeepFilterEditorExpanded")';
+    const keyIndex = templateSource.indexOf(key);
+    const configurationStart = templateSource.indexOf("<div v-if=\"editDataGridFilterEditorView !== 'quick'\"");
+    expect(keyIndex).toBeGreaterThan(-1);
+    expect(configurationStart).toBeGreaterThan(-1);
+    expect(configurationStart).toBeLessThan(keyIndex);
+    expect(templateSource).not.toContain("dataGridAutoHideFilterBuilder");
+  });
+
   it("overrides the shared Button nowrap contract on two- and three-column cards", () => {
     for (const key of affectedChoiceKeys) {
       const cardClass = classNameFromTag(openingTag(buttonBlockForKey(key), "Button"));
@@ -118,12 +128,13 @@ describe("EditorSettingsDialog choice card containment", () => {
     }
   });
 
-  it("keeps icon theme choices compact beside the corner style controls", () => {
-    expect(dialogSource).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
+  it("keeps large icon theme choices in appearance and debug logs in About", () => {
+    expect(sourceIndexForKey("iconTheme")).toBeLessThan(sourceIndexForKey("debugLoggingEnabled"));
+    expect(templateSource).toContain("data-icon-theme-settings");
     for (const key of ["iconThemeDefault", "iconThemeBlack"] as const) {
       const block = buttonBlockForKey(key);
-      expectClassTokens(classNameFromTag(openingTag(block, "Button")), ["settings-choice-button", "h-8"]);
-      expect(block).toContain('class="h-7 w-7 shrink-0"');
+      expectClassTokens(classNameFromTag(openingTag(block, "Button")), ["settings-choice-card", "h-auto", "min-w-0", "whitespace-normal", "overflow-hidden"]);
+      expect(block).toContain('class="h-12 w-12 shrink-0"');
     }
   });
 });

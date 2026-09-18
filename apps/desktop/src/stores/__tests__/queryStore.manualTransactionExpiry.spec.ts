@@ -125,12 +125,12 @@ describe("queryStore manual transaction expiry recovery", () => {
     expect(tab.result?.affected_rows).toBe(1);
   });
 
-  it("normalizes a stale manual OceanBase tab before query dispatch", async () => {
+  it("normalizes a stale manual tab for a non-transactional database before query dispatch", async () => {
     mocks.getConnectionConfig.mockReturnValue({
-      id: "oceanbase-1",
-      name: "OceanBase Oracle",
-      db_type: "oceanbase-oracle",
-      database: "SYS",
+      id: "sqlite-1",
+      name: "SQLite",
+      db_type: "sqlite",
+      database: "main",
       query_timeout_secs: 30,
     });
     mocks.beginManualTransaction.mockRejectedValue(new Error("BEGIN manual transaction failed: Agent RPC error (-1): Unknown method: begin_manual_transaction"));
@@ -138,7 +138,7 @@ describe("queryStore manual transaction expiry recovery", () => {
 
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
-    const tabId = store.createTab("oceanbase-1", "SYS", "Query", "query", "SYS");
+    const tabId = store.createTab("sqlite-1", "main", "Query", "query", "main");
     // Simulate a manual-mode value restored from an older saved query tab.
     store.setAutoCommit(tabId, false);
 
@@ -153,8 +153,34 @@ describe("queryStore manual transaction expiry recovery", () => {
     expect(tab.result?.execution_error).not.toBe(true);
   });
 
-  it("does not fall back to auto-commit when a supported manual transaction fails to begin", async () => {
+  it.each(["oracle", "oceanbase-oracle"] as const)("does not fall back to auto-commit when a supported %s manual transaction fails to begin", async (databaseType) => {
     mocks.beginManualTransaction.mockRejectedValue(new Error("manual transaction begin failed"));
+    mocks.executeMulti.mockResolvedValue(successfulSelect());
+    mocks.getConnectionConfig.mockReturnValue({
+      id: `${databaseType}-1`,
+      name: databaseType,
+      db_type: databaseType,
+      database: "ORCL",
+      query_timeout_secs: 30,
+    });
+
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = store.createTab(`${databaseType}-1`, "ORCL", "Query", "query", "APP");
+    store.setAutoCommit(tabId, false);
+
+    await store.executeTabSql(tabId, "SELECT 1 FROM DUAL");
+
+    const tab = store.tabs.find((item) => item.id === tabId)!;
+    expect(tab.autoCommit).toBe(false);
+    expect(mocks.beginManualTransaction).toHaveBeenCalledOnce();
+    expect(mocks.executeInManualTransaction).not.toHaveBeenCalled();
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+    expect(tab.result?.execution_error).toBe(true);
+  });
+
+  it("falls back to auto-commit for a read query when an old Oracle Agent lacks manual transactions", async () => {
+    mocks.beginManualTransaction.mockRejectedValue(new Error("BEGIN manual transaction failed: Agent RPC error (-1): unknown method: begin_manual_transaction"));
     mocks.executeMulti.mockResolvedValue(successfulSelect());
 
     const { useQueryStore } = await import("@/stores/queryStore");
@@ -163,6 +189,26 @@ describe("queryStore manual transaction expiry recovery", () => {
     store.setAutoCommit(tabId, false);
 
     await store.executeTabSql(tabId, "SELECT 1 FROM DUAL");
+
+    const tab = store.tabs.find((item) => item.id === tabId)!;
+    expect(tab.autoCommit).toBe(true);
+    expect(tab.txnSessionId).toBeUndefined();
+    expect(mocks.beginManualTransaction).toHaveBeenCalledOnce();
+    expect(mocks.executeInManualTransaction).not.toHaveBeenCalled();
+    expect(mocks.executeMulti).toHaveBeenCalledOnce();
+    expect(tab.result?.rows).toEqual([[1]]);
+  });
+
+  it("does not replay a write when an old Oracle Agent lacks manual transactions", async () => {
+    mocks.beginManualTransaction.mockRejectedValue(new Error("BEGIN manual transaction failed: Agent RPC error (-1): Method not found: begin_manual_transaction"));
+    mocks.executeMulti.mockResolvedValue(successfulUpdate());
+
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = store.createTab("oracle-1", "ORCL", "Query", "query", "APP");
+    store.setAutoCommit(tabId, false);
+
+    await store.executeTabSql(tabId, "UPDATE USERS SET ACTIVE = 1");
 
     const tab = store.tabs.find((item) => item.id === tabId)!;
     expect(tab.autoCommit).toBe(false);
@@ -199,20 +245,20 @@ describe("queryStore manual transaction expiry recovery", () => {
     expect(tab.result?.rows).toEqual([[1]]);
   });
 
-  it("surfaces ordinary query failures after normalizing a stale OceanBase tab", async () => {
+  it("surfaces ordinary query failures after normalizing a stale non-transactional tab", async () => {
     mocks.getConnectionConfig.mockReturnValue({
-      id: "oceanbase-1",
-      name: "OceanBase Oracle",
-      db_type: "oceanbase-oracle",
-      database: "SYS",
+      id: "sqlite-1",
+      name: "SQLite",
+      db_type: "sqlite",
+      database: "main",
       query_timeout_secs: 30,
     });
     mocks.beginManualTransaction.mockRejectedValue(new Error("BEGIN manual transaction failed: Agent RPC error (-1): Unknown method: begin_manual_transaction"));
-    mocks.executeMulti.mockRejectedValue(new Error("OceanBase query failed"));
+    mocks.executeMulti.mockRejectedValue(new Error("SQLite query failed"));
 
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
-    const tabId = store.createTab("oceanbase-1", "SYS", "Query", "query", "SYS");
+    const tabId = store.createTab("sqlite-1", "main", "Query", "query", "main");
     store.setAutoCommit(tabId, false);
 
     await store.executeTabSql(tabId, "SELECT missing_column FROM DUAL");

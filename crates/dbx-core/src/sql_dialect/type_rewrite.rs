@@ -343,10 +343,33 @@ pub fn rewrite_column_type(source_type: &str, target: DatabaseType, source_diale
     // Dialect-kind matrix
     if let Some(src) = source_dialect {
         let target_kind = DialectKind::from_database_type(target);
-        let matrix = TypeMappingMatrix::for_dialects(src, target_kind);
-        let (converted, _) = matrix.convert_type(source_type);
-        if converted != source_type {
-            return strip_display_width_if_needed(&converted, &profile);
+        if src != target_kind {
+            let matrix = TypeMappingMatrix::for_dialects(src, target_kind);
+            let (converted, _) = matrix.convert_type(source_type);
+            if converted != source_type {
+                return strip_display_width_if_needed(&converted, &profile);
+            }
+            // No matrix rule for this cross-dialect pair, and it's a
+            // *varying*-length string type reported without a length — e.g.
+            // Postgres/Kingbase's unbounded `character varying` via
+            // format_type(). A bare passthrough would be invalid DDL for a
+            // target that requires an explicit VARCHAR length (MySQL and its
+            // family: VARCHAR/CHARACTER VARYING with no length is a syntax
+            // error there). Default to 255, matching the same fallback
+            // apply_template() already uses when a mapped type's length is
+            // missing. CHAR/CHARACTER are deliberately excluded: MySQL
+            // accepts a bare CHAR as CHAR(1), so defaulting it to 255 would
+            // silently change valid output into a different, wrong length.
+            // VARCHAR2/NVARCHAR2 are also excluded: they aren't valid MySQL
+            // type names at all, with or without a length, so defaulting
+            // their length fixes nothing.
+            if params.is_none()
+                && profile.requires_explicit_varchar_length
+                && profile.max_varchar_len.is_some()
+                && matches!(base.as_str(), "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR")
+            {
+                return format!("{}(255)", source_type.trim());
+            }
         }
     }
 
@@ -357,7 +380,10 @@ pub fn rewrite_column_type(source_type: &str, target: DatabaseType, source_diale
 pub fn column_is_auto_increment(col: &ColumnInfo) -> bool {
     col.extra.as_deref().is_some_and(|extra| {
         let lower = extra.to_ascii_lowercase();
-        lower.contains("auto_increment") || lower.contains("identity") || lower.contains("serial")
+        lower.contains("auto_increment")
+            || lower.contains("autoincrement")
+            || lower.contains("identity")
+            || lower.contains("serial")
     })
 }
 
@@ -382,7 +408,13 @@ pub fn apply_auto_inc_to_column_def(
     col: &ColumnInfo,
     is_integer_like: bool,
 ) -> AutoIncColumnBuild {
-    let wants_auto = col.is_primary_key && (column_is_auto_increment(col) || is_integer_like);
+    let wants_auto = col.is_primary_key
+        && (column_is_auto_increment(col)
+            || (is_integer_like
+                && !matches!(
+                    profile.auto_inc,
+                    crate::sql_dialect::ddl_profile::AutoIncSyntax::Suffix(" AUTOINCREMENT")
+                )));
 
     match profile.auto_inc {
         crate::sql_dialect::ddl_profile::AutoIncSyntax::ReplaceTypeWith(type_name)
@@ -394,7 +426,12 @@ pub fn apply_auto_inc_to_column_def(
             }
             AutoIncColumnBuild::Complete { def, skip_default: true }
         }
-        crate::sql_dialect::ddl_profile::AutoIncSyntax::Suffix(suffix) if col.is_primary_key && is_integer_like => {
+        // SQLite's AUTOINCREMENT changes semantics (sqlite_sequence, no rowid
+        // reuse), so it must only be emitted for sources that explicitly ask
+        // for auto-increment; other suffixes keep the implicit PK heuristic.
+        crate::sql_dialect::ddl_profile::AutoIncSyntax::Suffix(suffix)
+            if col.is_primary_key && is_integer_like && (wants_auto || suffix != " AUTOINCREMENT") =>
+        {
             AutoIncColumnBuild::AppendSuffix { suffix, skip_default: false, postgres_sequence: false }
         }
         crate::sql_dialect::ddl_profile::AutoIncSyntax::PostgresSequence if col.is_primary_key && is_integer_like => {
@@ -507,6 +544,45 @@ mod tests {
     fn mysql_keeps_display_width() {
         let t = rewrite_column_type("int(11)", DatabaseType::Mysql, None);
         assert_eq!(t, "int(11)");
+    }
+
+    #[test]
+    fn mysql_defaults_missing_length_on_cross_dialect_varchar() {
+        // Postgres/Kingbase report an unbounded varchar column as a bare
+        // `character varying` (no length) via format_type(). MySQL's
+        // VARCHAR/CHARACTER VARYING requires an explicit length, so passing
+        // that through verbatim is a syntax error (issue #8011).
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(rewrite_column_type("character varying", DatabaseType::Mysql, source), "character varying(255)");
+        assert_eq!(rewrite_column_type("varchar", DatabaseType::Mysql, source), "varchar(255)");
+    }
+
+    #[test]
+    fn mysql_leaves_bare_char_untouched() {
+        // Unlike VARCHAR, a bare CHAR/CHARACTER is already valid MySQL
+        // syntax (implicitly CHAR(1)); defaulting it to 255 would silently
+        // change correct output into a different, wrong length.
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(rewrite_column_type("character", DatabaseType::Mysql, source), "character");
+        assert_eq!(rewrite_column_type("char", DatabaseType::Mysql, source), "char");
+    }
+
+    #[test]
+    fn mysql_keeps_explicit_length_on_cross_dialect_varchar() {
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(
+            rewrite_column_type("character varying(120)", DatabaseType::Mysql, source),
+            "character varying(120)"
+        );
+    }
+
+    #[test]
+    fn mysql_same_dialect_varchar_is_untouched_regardless_of_length() {
+        // Same-dialect metadata (or unknown source dialect) must never be
+        // rewritten — only a genuine cross-dialect gap should trigger the
+        // missing-length default.
+        assert_eq!(rewrite_column_type("varchar(255)", DatabaseType::Mysql, Some(DialectKind::Mysql)), "varchar(255)");
+        assert_eq!(rewrite_column_type("varchar(255)", DatabaseType::Mysql, None), "varchar(255)");
     }
 
     #[test]

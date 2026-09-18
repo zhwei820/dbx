@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Component } from "vue";
+import { computed, defineAsyncComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Component } from "vue";
 import { uuid } from "@/lib/common/utils";
 import { useI18n } from "vue-i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
@@ -24,6 +24,8 @@ import {
   GitBranch,
   HelpCircle,
   History,
+  ArrowDownToLine,
+  Layers,
   Loader2,
   Maximize2,
   MessageSquarePlus,
@@ -31,12 +33,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Replace,
   Server,
   ShieldCheck,
   Table2,
   Play,
   Square,
+  Sparkles,
+  Star,
   Trash2,
   Terminal,
   Wand2,
@@ -47,7 +50,7 @@ import {
   Search,
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -55,7 +58,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useTheme } from "@/composables/useTheme";
 import CodeSnapshotDialog from "@/components/codeSnapshot/CodeSnapshotDialog.vue";
 import type { CodeSnapshotSource } from "@/lib/codeSnapshot/codeSnapshot";
-import { useSettingsStore, AI_PROVIDER_PRESETS, aiProviderLabel, normalizeAiConfig } from "@/stores/settingsStore";
+import { useSettingsStore, AI_PROVIDER_PRESETS, aiProviderLabel, getAiProviderPreset, normalizeAiConfig } from "@/stores/settingsStore";
 import AiProviderLogo from "@/components/icons/AiProviderLogo.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
@@ -63,6 +66,7 @@ import { usePromptTemplateStore } from "@/stores/promptTemplateStore";
 import { connectionIconType } from "@/lib/connection/connectionPresentation";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import ConnectionTreeSelect from "@/components/connection/ConnectionTreeSelect.vue";
+import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
 import { useQueryStore } from "@/stores/queryStore";
 import { useToast } from "@/composables/useToast";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
@@ -71,11 +75,15 @@ import {
   resolveAiDatabaseTarget,
   resolveAiNamespaceSelection,
   resolveDefaultAiSchema,
+  aiDatabaseTypeForConnection,
+  aiSchemaSelectionSupported,
   runAgentStream,
   isVectorDbType,
   isValidActionForMode,
+  isAutoActionSelection,
   defaultActionForMode,
   type AiAction,
+  type AiActionSelection,
   type AiAssistantMode,
   type AiCsvFileContext,
   type AiTextAttachmentEncoding,
@@ -132,6 +140,8 @@ import { orderAiConfigsForDisplay } from "@/lib/ai/aiConfigOrdering";
 import { effortSelectionEquals, runtimeEffortFromPreference } from "@/lib/ai/aiEffortPreference";
 import { useAiModelCatalog } from "@/composables/useAiModelCatalog";
 import { ACTIVE_TEMPLATES_TOTAL_MAX, promptTemplateCharacterCount } from "@/types/promptTemplate";
+import { capTemplateIdsToCharLimit, resolveAutoTemplateIds, resolveDefaultTemplateIds } from "@/lib/ai/promptTemplateDefaults";
+import { databaseManifestEntry } from "@/lib/database/databaseDriverManifest";
 
 import type { AgentEvent } from "@/lib/backend/tauri";
 import { buildAiAgentPlan } from "@/lib/ai/aiAgentPlan";
@@ -147,10 +157,11 @@ import type { AiMessage } from "@/lib/backend/api";
 import type { AiConfigItem, AiEffortCapability, AiEffortOption, AiEffortSelection } from "@/types/ai";
 import type { ConnectionConfig, QueryTab, SavedSqlFile, TableInfo } from "@/types/database";
 import { fetchNamespaceOptionsForConnection, useDatabaseOptions } from "@/composables/useDatabaseOptions";
-import { decodeSelectableDatabaseValue, encodeSelectableDatabaseValue, formatDatabaseLabel, resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
+import { useSchemaOptions } from "@/composables/useSchemaOptions";
+import { encodeSelectableDatabaseValue, formatDatabaseLabel, resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
 import { normalizeSqliteNamespace } from "@/lib/database/sqliteNamespace";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
-import { isSchemaAware } from "@/lib/database/databaseCapabilities";
+import { isSchemaAware, isSingleDatabase } from "@/lib/database/databaseCapabilities";
 import ExplainPlanViewer from "@/components/explain/ExplainPlanViewer.vue";
 import { parseExplainResult, parseOracleExplainText, type ParsedExplainPlan } from "@/lib/diagram/explainPlan";
 import { copyToClipboard } from "@/lib/common/clipboard";
@@ -159,15 +170,34 @@ import { handleAiTableReferenceDropEvent } from "@/lib/ai/aiTableReferenceDrop";
 import { DBX_TABLE_REFERENCE_DROP_EVENT, clearActiveTableReferencePayload } from "@/lib/editor/queryEditorTableDrop";
 import { canSubmitAiPrompt, isAiPromptImeCompositionEvent, shouldSubmitAiPromptOnKeydown } from "@/lib/ai/aiPromptKeyboard";
 import { isActionableWriteProposalMessage, isActionableWriteSqlProposal, looksLikeActionProposal, looksLikeWriteSqlProposal, shouldGrantWriteSqlOnShortAffirmative } from "@/lib/ai/aiProposalDetect";
+import { classifyIntentByLlm, routeIntentByRules, type AiIntentRouteInput } from "@/lib/ai/aiIntentRouter";
 import { visibleToActualIndex } from "@/lib/ai/aiMessageEdit";
 import { shouldShowReasoningCharCount, reasoningCharCountClass } from "@/lib/ai/aiReasoningPresentation";
 import { saveTextFile } from "@/lib/export/saveTextFile";
 import { buildAiAnalysisExport } from "@/lib/export/aiAnalysisExport";
+import { buildAiConversationExport, type AiConversationExportFormat } from "@/lib/export/aiConversationExport";
 import { buildAiConversationSearchIndex, filterAiConversationSearchIndex } from "@/lib/ai/aiConversationSearch";
 import AiAttachmentCard from "@/components/editor/AiAttachmentCard.vue";
 import { resolveAiMessageCopyText } from "@/lib/ai/aiMessageCopy";
 
 const { t } = useI18n();
+const AiChartRenderer = defineAsyncComponent({
+  // Lazy-load the chart renderer (and with it the whole echarts bundle): echarts
+  // is only pulled in when a message actually renders a chart-json segment.
+  loader: () => import("@/components/ai/rich/AiChartRenderer.vue"),
+  // A visible, fixed-height status prevents an async chunk from looking like a
+  // failed chart and reserves the same viewport before the canvas is ready.
+  loadingComponent: () =>
+    h("div", { class: "my-2 flex min-h-60 h-[clamp(15rem,35vw,20rem)] w-full items-center justify-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 text-xs text-zinc-500 dark:border-zinc-700/50 dark:bg-zinc-900 dark:text-zinc-400", role: "status", "aria-live": "polite" }, [
+      h(Loader2, { class: "h-4 w-4 animate-spin", "aria-hidden": "true" }),
+      h("span", t("common.loading")),
+    ]),
+});
+const AiHtmlPreview = defineAsyncComponent({
+  // HTML previews are rare (the prompt only allows them on explicit request),
+  // so lazy-load the component just like the chart renderer.
+  loader: () => import("@/components/ai/rich/AiHtmlPreview.vue"),
+});
 const settings = useSettingsStore();
 const connectionStore = useConnectionStore();
 const savedSqlStore = useSavedSqlStore();
@@ -224,6 +254,9 @@ interface ChatMessage {
   /** Image payloads stay in memory only and are never written to conversation storage. */
   imageAttachments?: AiImageAttachment[];
   reasoning?: string;
+  /** Set when this message's generation failed; persisted with the conversation
+   *  so the export failure marker survives reloads and locale switches. */
+  failed?: boolean;
   isThinking?: boolean;
   agentSteps?: AiAgentStepItem[];
   /** Hidden system-generated context summary; not rendered in chat UI but included in LLM history.
@@ -233,6 +266,13 @@ interface ChatMessage {
   kind?: "contextSummary" | "writeSqlConfirmation" | "productionWriteBlocked";
   /** Per-message token stats from the last agent run; ephemeral, not persisted. */
   tokens?: { input: number; output: number };
+  /**
+   * Set on the user message that was sent while the picker stood on `auto`,
+   * together with the concrete action the router resolved (#9118). Ephemeral
+   * (like `tokens`): it only drives the "Auto · <action>" chip.
+   */
+  routedFrom?: "auto";
+  routedAction?: AiAction;
 }
 
 const props = defineProps<{
@@ -242,7 +282,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  replaceSql: [sql: string];
+  appendSql: [sql: string];
   executeSql: [sql: string];
   tempRunSql: [sql: string];
   requestAutoExecuteSql: [sql: string];
@@ -257,16 +297,27 @@ const prompt = ref("");
 const messages = ref<ChatMessage[]>([]);
 const isGenerating = ref(false);
 const scrollRef = ref<InstanceType<typeof ScrollArea> | null>(null);
-const activeAction = ref<AiAction>("general");
+// Stays a concrete action until the AI config loads: whether new conversations
+// land on the `auto` entry is decided by the Settings > AI toggle (see
+// `resolveDefaultActionSelection`).
+const activeAction = ref<AiActionSelection>("general");
+/** True while the Auto slow path (intent classifier) is in flight for the visible conversation. */
+const routingInFlight = ref(false);
 const assistantMode = ref<AiAssistantMode>("ask");
 // The selection is loaded asynchronously. Apply it once when this panel mounts,
 // but do not let later setting changes alter an active conversation.
 let defaultModeInitialized = false;
+let initialConversationStateLoaded = false;
+let initialConversationRestored = false;
+let assistantViewMounted = false;
 watch(
   () => settings.isAiConfigLoaded,
   (loaded) => {
     if (loaded && !defaultModeInitialized) {
       assistantMode.value = settings.defaultAiMode;
+      // Same apply-once rule as the mode: later setting changes must not
+      // disturb an active conversation.
+      activeAction.value = resolveDefaultActionSelection(settings.defaultAiMode);
       defaultModeInitialized = true;
     }
   },
@@ -275,14 +326,28 @@ watch(
 const currentSessionId = ref("");
 const conversationId = ref("");
 const conversations = ref<AiConversation[]>([]);
+function restoreInitialConversation() {
+  if (!assistantViewMounted || initialConversationRestored || !initialConversationStateLoaded || !settings.isAiConfigLoaded) return;
+  initialConversationRestored = true;
+  if (settings.restoreLastConversation && conversations.value[0]) {
+    selectConversation(conversations.value[0]);
+  }
+}
+watch(
+  () => settings.isAiConfigLoaded,
+  () => restoreInitialConversation(),
+);
 const conversationSearchQuery = ref("");
 const conversationSearchInput = ref<HTMLInputElement | null>(null);
 const conversationSearchIndex = computed(() => buildAiConversationSearchIndex(conversations.value));
 const filteredConversations = computed(() => filterAiConversationSearchIndex(conversationSearchIndex.value, conversationSearchQuery.value));
 const showConversationList = ref(false);
+const renamingConversationId = ref<string | null>(null);
+const renamingConversationTitle = ref("");
+const renamingConversationInput = ref<HTMLInputElement | null>(null);
+const renamedConversationTitles = reactive(new Map<string, string>());
 const showTemplateSelector = ref(false);
 const modeActionOpen = ref(false);
-let assistantViewMounted = false;
 // A normal-send FIFO run recovered at startup as an editable pending draft.
 // When the user opens that conversation, the draft is loaded into the input
 // box and this banner explains it is an unsent, resendable request.
@@ -301,14 +366,14 @@ const unreadConversations = reactive(new Set<string>());
  *  occupies it. Persisted via `AiConversation.queuedInput` and restored after a
  *  restart. The mode/action are in-memory only (they default to the current
  *  view after a restart). */
-type QueuedConversationInput = { text: string; mode: AiAssistantMode; action: AiAction };
+type QueuedConversationInput = { text: string; mode: AiAssistantMode; action: AiActionSelection };
 const queuedInputs = reactive(new Map<string, QueuedConversationInput>());
 
 /** Auto-send/retry work waiting to enter the normal send pipeline. More than
  * one background run can settle in the same event turn; this must be FIFO, not
  * a single "next send" slot, or the later completion silently drops the first
  * conversation's queued input. */
-type PendingAutoSend = { conversationId: string; text: string; messages: ChatMessage[]; mode: AiAssistantMode; action: AiAction };
+type PendingAutoSend = { conversationId: string; text: string; messages: ChatMessage[]; mode: AiAssistantMode; action: AiActionSelection };
 const pendingAutoSends: PendingAutoSend[] = [];
 
 /** Highest event `seq` the user has read per conversation (parent PRD §8). Set
@@ -434,19 +499,70 @@ watch(
 
 // Retry store load on selector open if prior init failed (e.g. backend not yet ready at mount)
 watch(showTemplateSelector, (open) => {
-  if (open) void promptTemplateStore.ensureLoaded();
+  // Retry load on selector open if prior init failed, then apply pending
+  // per-db_type defaults that were skipped when the initial load failed.
+  if (open) void promptTemplateStore.ensureLoaded().then(() => void maybeApplyAutoTemplates());
 });
 
-// Reset template selection when the user switches to a different connection or database —
-// a new database context warrants a fresh selection of scenario templates.
+// Auto-apply per-db_type prompt template defaults once both the AI selection
+// (which carries the defaults) and the template list have loaded. Only this
+// one-time resolution and the namespace watcher below write the selection
+// implicitly; manual edits in between are never overwritten.
+// Template defaults/last-used are keyed by the connection's effective AI
+// database type (gbase → mysql/informix, doris-over-mysql protocol, jdbc →
+// inferred dialect) so resolution matches the dialect the AI pipeline and
+// prompt selection actually use — the same axis aiDatabaseTypeForConnection
+// established for schema selection.
+const templateDbType = computed(() => (props.connection ? aiDatabaseTypeForConnection(props.connection) : undefined));
+const aiTemplateNamespaceKey = computed(() => `${props.connection?.id ?? ""}::${props.tab?.database ?? ""}::${props.tab?.schema ?? ""}`);
+let autoTemplatesInitialized = false;
+function applyResolvedTemplateIds(ids: string[]) {
+  activeTemplateIds.value = capTemplateIdsToCharLimit(ids, promptTemplateStore.templates, ACTIVE_TEMPLATES_TOTAL_MAX);
+}
+async function maybeApplyAutoTemplates() {
+  if (autoTemplatesInitialized || !settings.isAiConfigLoaded) return;
+  const namespaceAtStart = aiTemplateNamespaceKey.value;
+  if (!(await promptTemplateStore.ensureLoaded())) return;
+  autoTemplatesInitialized = true;
+  // A namespace switch during the await already ran the defaults-only
+  // resolution below; applying defaults-or-last-used now would violate the
+  // switch contract and could overwrite a manual selection made meanwhile.
+  if (namespaceAtStart !== aiTemplateNamespaceKey.value) return;
+  // Panel-open resolution: explicit defaults, else the db_type's last-used.
+  applyResolvedTemplateIds(
+    resolveAutoTemplateIds({
+      dbType: templateDbType.value,
+      defaultTemplatesByDbType: settings.aiDefaultTemplatesByDbType,
+      lastUsedTemplatesByDbType: settings.aiLastUsedTemplatesByDbType,
+    }),
+  );
+}
 watch(
-  // Return a stable primitive key: a fresh array literal is never Object.is-equal to the
-  // previous one, so a getter returning `[id, database]` fires on every dependency
-  // invalidation (e.g. the 30s backup scheduler replacing connection objects) even when the
-  // id/database values are unchanged — spuriously clearing the selection mid agent-run.
-  () => `${props.connection?.id ?? ""}::${props.tab?.database ?? ""}`,
+  () => settings.isAiConfigLoaded,
+  () => void maybeApplyAutoTemplates(),
+  { immediate: true },
+);
+
+// Reset template selection when the user switches to a different connection,
+// database, or schema — a new namespace context warrants a fresh selection:
+// the new db_type's default templates when the user configured any (explicit
+// opt-in), otherwise empty, preserving the pre-defaults clear-on-switch
+// contract. Last-used templates are intentionally not restored here: that
+// would silently re-select templates on every namespace switch.
+watch(
+  // The key is a stable primitive string (see aiTemplateNamespaceKey): a fresh
+  // array literal is never Object.is-equal to the previous one, so a getter
+  // returning `[id, database]` fires on every dependency invalidation (e.g.
+  // the 30s backup scheduler replacing connection objects) even when the
+  // id/database values are unchanged — spuriously clearing the selection mid
+  // agent-run.
+  aiTemplateNamespaceKey,
   () => {
-    activeTemplateIds.value = [];
+    if (!settings.isAiConfigLoaded || !promptTemplateStore.isLoaded) {
+      activeTemplateIds.value = [];
+      return;
+    }
+    applyResolvedTemplateIds(resolveDefaultTemplateIds(templateDbType.value, settings.aiDefaultTemplatesByDbType));
   },
 );
 
@@ -485,6 +601,14 @@ const templateSelectorTriggerLabel = computed(() => {
   }
   return templateSelectorLabel.value;
 });
+const currentDbType = computed(() => templateDbType.value);
+function isDefaultTemplateForCurrentDb(id: string): boolean {
+  const dbType = currentDbType.value;
+  return !!dbType && (settings.aiDefaultTemplatesByDbType[dbType]?.includes(id) ?? false);
+}
+function currentDbTypeLabel(): string {
+  return currentDbType.value ? (databaseManifestEntry(currentDbType.value)?.label ?? currentDbType.value) : "";
+}
 const promptTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const csvFileInputRef = ref<HTMLInputElement | null>(null);
 const shouldAutoScroll = ref(true);
@@ -715,7 +839,7 @@ const activeFullConfig = computed(() => {
 });
 
 function isModelCandidate(config: AiConfigItem): boolean {
-  return isAiConfigModelCandidate(config, AI_PROVIDER_PRESETS[config.provider].requiresApiKey, supportsCliProviders);
+  return isAiConfigModelCandidate(config, getAiProviderPreset(config.provider, config.endpoint).requiresApiKey, supportsCliProviders);
 }
 
 function getModelsForConfig(configId: string) {
@@ -724,8 +848,14 @@ function getModelsForConfig(configId: string) {
   return aiModelOptions(config, modelCatalogs.get(configId)?.models ?? []);
 }
 
+function aiConfigProviderLabel(config: { provider: AiConfigItem["provider"]; endpoint: string } | null | undefined): string {
+  if (!config) return aiProviderLabel("claude", t);
+  const preset = getAiProviderPreset(config.provider, config.endpoint);
+  return preset.provider === "custom" ? aiProviderLabel(config.provider, t) : preset.label;
+}
+
 function configMatchesModelQuery(config: AiConfigItem, query: string): boolean {
-  return config.name.toLowerCase().includes(query) || config.provider.toLowerCase().includes(query) || aiProviderLabel(config.provider, t).toLowerCase().includes(query) || AI_PROVIDER_PRESETS[config.provider].label.toLowerCase().includes(query);
+  return config.name.toLowerCase().includes(query) || config.provider.toLowerCase().includes(query) || aiConfigProviderLabel(config).toLowerCase().includes(query);
 }
 
 function getConfigModelOptions(config: AiConfigItem) {
@@ -994,14 +1124,23 @@ const AI_SQL_FILE_MENTION_CANDIDATE_LIMIT = 50;
 const AI_SQL_FILE_CONTEXT_MAX_CHARS = 12_000;
 
 interface AiActionButton {
-  action: AiAction;
+  action: AiActionSelection;
   icon: Component;
   /** i18n key for the menu label. */
   key: string;
 }
 
+/**
+ * The `auto` entry (#9118) heads both lists: it keeps every explicit action
+ * available while giving users one entry that routes the request to whichever
+ * action fits (see `resolveAutoAction`). It is UI-only — `ASK_ACTIONS` /
+ * `AGENT_ACTIONS` stay free of it.
+ */
+const autoActionButton: AiActionButton = { action: "auto", icon: Sparkles, key: "ai.actions.auto" };
+
 /** Ask-mode actions: SQL-producing, never auto-run. */
 const askActionButtons: AiActionButton[] = [
+  autoActionButton,
   { action: "general", icon: MessageSquarePlus, key: "ai.actions.general" },
   { action: "generate", icon: Wand2, key: "ai.actions.generate" },
   { action: "explain", icon: HelpCircle, key: "ai.actions.explain" },
@@ -1013,6 +1152,7 @@ const askActionButtons: AiActionButton[] = [
 
 /** Agent-mode actions: task-oriented, drive tool use and real results. */
 const agentActionButtons: AiActionButton[] = [
+  autoActionButton,
   { action: "general", icon: MessageSquarePlus, key: "ai.actions.general" },
   { action: "query", icon: Search, key: "ai.actions.query" },
   { action: "exploreSchema", icon: Table2, key: "ai.actions.exploreSchema" },
@@ -1031,8 +1171,18 @@ function resolveDefaultAction(mode: AiAssistantMode): AiAction {
   return defaultActionForMode(mode);
 }
 
+// The Settings > AI toggle lets new conversations land on the `auto` picker
+// entry (#9118); routing still resolves to a concrete action before any
+// request. Vector DBs keep the concrete `generate` action because their action
+// menu is hidden entirely.
+function resolveDefaultActionSelection(mode: AiAssistantMode): AiActionSelection {
+  if (settings.defaultAutoRouting && !(props.connection && isVectorDbType(props.connection.db_type))) return "auto";
+  return resolveDefaultAction(mode);
+}
+
 // Switching mode is a deliberate context change: land on that mode's default action so the
-// menu and behavior match the new intent. The shared `general` action is the default.
+// menu and behavior match the new intent. That default is the mode's concrete action, or
+// `auto` when Settings > AI enables it (#9118).
 //
 // `triggerAction` may set the action itself after programmatically switching mode (e.g. "Fix
 // with AI" invoked from Agent mode); `suppressModeActionReset` tells this watch to skip the
@@ -1043,7 +1193,7 @@ watch(assistantMode, (mode) => {
     suppressModeActionReset = false;
     return;
   }
-  activeAction.value = resolveDefaultAction(mode);
+  activeAction.value = resolveDefaultActionSelection(mode);
 });
 
 watch(
@@ -1058,13 +1208,71 @@ watch(
   { immediate: true },
 );
 
-function selectAction(action: AiAction) {
+function selectAction(action: AiActionSelection) {
   activeAction.value = action;
   if (action === "fix" && props.tab?.result) {
     if (isQueryExecutionErrorResult(props.tab.result)) {
       const errVal = props.tab.result.rows[0]?.[0];
       if (errVal != null) prompt.value = String(errVal);
     }
+  }
+}
+
+/** Menu label of a concrete action, mapped through either mode's button list. */
+function actionLabelFor(action: AiAction | null | undefined): string {
+  if (!action) return "";
+  const button = [...actionButtons.value, ...askActionButtons, ...agentActionButtons].find((item) => item.action === action);
+  return button ? t(button.key) : action;
+}
+
+/** The action the router resolved for an `auto` message, if any (drives the chip). */
+function routedActionOf(message: ChatMessage): AiAction | null {
+  return message.routedFrom === "auto" && message.routedAction ? message.routedAction : null;
+}
+
+/**
+ * The "Auto · <action>" chip switches the picker to the action that was routed
+ * for that message, so the user can keep iterating explicitly. The routed action
+ * is always valid in the mode it was routed in; when the panel now stands in the
+ * other mode, switch there first (the `suppressModeActionReset` handshake keeps
+ * the mode-switch watch from overwriting the action we just set).
+ */
+function switchToRoutedAction(action: AiAction | null | undefined) {
+  if (!action) return;
+  if (!isValidActionForMode(action, assistantMode.value)) {
+    suppressModeActionReset = true;
+    assistantMode.value = isValidActionForMode(action, "ask") ? "ask" : "agent";
+  }
+  activeAction.value = action;
+}
+
+/** Mirrors `buildAiContext`'s `lastError`: only a real failed execution counts. */
+function tabHasLastError(): boolean {
+  const result = props.tab?.result;
+  return !!result && isQueryExecutionErrorResult(result) && result.rows[0]?.[0] != null;
+}
+
+/**
+ * Resolve the `auto` picker entry into one concrete action (#9118), before any
+ * request is assembled: the rule layer answers instantly, and only a rule miss
+ * pays for a single tiny classifier completion (bounded by
+ * `INTENT_CLASSIFY_TIMEOUT_MS`). The classifier never throws and falls back to
+ * the mode default, so an unavailable/slow model cannot fail the send.
+ *
+ * `showProgress` is only true for the conversation actually on screen — a
+ * background auto-send must not flash "识别中" over an unrelated chat.
+ */
+async function resolveAutoAction(text: string, mode: AiAssistantMode, showProgress: boolean): Promise<AiAction> {
+  const input: AiIntentRouteInput = { text, mode, hasCurrentSql: !!props.tab?.sql.trim(), hasLastError: tabHasLastError() };
+  const byRules = routeIntentByRules(input);
+  if (byRules) return byRules;
+  const config = activeFullConfig.value;
+  if (!config) return resolveDefaultAction(mode);
+  if (showProgress) routingInFlight.value = true;
+  try {
+    return await classifyIntentByLlm(input, { config });
+  } finally {
+    if (showProgress) routingInFlight.value = false;
   }
 }
 
@@ -1197,7 +1405,7 @@ function sendProposalReply(positive: boolean) {
   const isWriteConfirmation = isActionableWriteProposalMessage(target);
   if (positive && productionContext.value.active && (target.kind === "writeSqlConfirmation" || looksLikeWriteSqlProposal(target.content))) {
     const sql = extractFirstSqlCodeBlock(target.content);
-    if (sql) emit("replaceSql", sql);
+    if (sql) emit("appendSql", sql);
     toast(t("production.aiReviewRequired"), 5000);
     return;
   }
@@ -1230,7 +1438,8 @@ function sendProposalReply(positive: boolean) {
   send();
 }
 
-const activePlaceholder = computed(() => `${t(`ai.placeholders.${activeAction.value}`)} ${t("ai.tableMentionPlaceholderHint")}`);
+// `auto` has no per-action placeholder of its own, so it reuses the general one.
+const activePlaceholder = computed(() => `${t(`ai.placeholders.${isAutoActionSelection(activeAction.value) ? "general" : activeAction.value}`)} ${t("ai.tableMentionPlaceholderHint")}`);
 const aiCodeAppearance = computed(() => (isDark.value ? "dark" : "light"));
 
 const codeSnapshotOpen = ref(false);
@@ -1256,14 +1465,14 @@ const modeActionTriggerLabel = computed(() => {
 });
 
 function switchModeActionTab(mode: "ask" | "agent") {
-  activeAction.value = resolveDefaultAction(mode);
+  activeAction.value = resolveDefaultActionSelection(mode);
   if (assistantMode.value !== mode) {
     // Set the mode after the action so the tab label and picker stay aligned.
     assistantMode.value = mode;
   }
 }
 
-function selectModeActionItem(action: AiAction) {
+function selectModeActionItem(action: AiActionSelection) {
   // Vector databases only support generation; keep this constraint at the selection boundary.
   if (!showActionButtons.value) return;
   selectAction(action);
@@ -1271,6 +1480,7 @@ function selectModeActionItem(action: AiAction) {
 }
 
 const { databaseOptions, loadDatabaseOptions } = useDatabaseOptions();
+const { loadSchemaOptions, getSchemaOptionsForDb, isLoadingSchemas } = useSchemaOptions();
 
 // Dameng presents schemas as its top-level namespace, unlike the other
 // connection types that rely on the shared database-options loader.
@@ -1296,18 +1506,72 @@ const dbSelectOptions = computed(() => {
   }));
 });
 
-const selectedNamespace = computed(() => (props.connection && props.tab ? resolveAiNamespaceSelection(props.tab, props.connection).value : ""));
+// AI can inspect more than the tab's active database. Keep this selection local
+// to the composer so changing the visible query tab does not rewrite SQL state.
+const selectedDatabases = ref<string[]>([]);
+const databaseSearchQuery = ref("");
+const filteredDbSelectOptions = computed(() => {
+  const query = databaseSearchQuery.value.trim().toLowerCase();
+  if (!query) return dbSelectOptions.value;
+  return dbSelectOptions.value.filter((option) => option.label.toLowerCase().includes(query) || option.database.toLowerCase().includes(query));
+});
 
-const selectedDatabaseSelectValue = computed(() => (props.connection ? encodeSelectableDatabaseValue(props.connection.db_type, selectedNamespace.value) : ""));
-
+const selectedDatabaseValues = computed(() => new Set(selectedDatabases.value));
 const selectedDatabaseLabel = computed(() => {
   if (!props.connection) return t("editor.selectDatabase");
-  if (!props.tab) return t("editor.selectDatabase");
-  return formatDatabaseLabel(props.connection, selectedNamespace.value, {
-    defaultDatabase: t("editor.defaultDatabase"),
-    noDatabase: t("editor.noDatabase"),
-  });
+  const labels = dbSelectOptions.value.filter((option) => selectedDatabaseValues.value.has(option.database)).map((option) => option.label);
+  return labels.length ? labels.join(", ") : t("editor.selectDatabase");
 });
+
+function syncSelectedDatabases() {
+  const active = selectedNamespace.value;
+  const available = dbSelectOptions.value.map((option) => option.database);
+  const retained = selectedDatabases.value.filter((database) => available.includes(database));
+  selectedDatabases.value = retained.length ? retained : active ? [active] : [];
+}
+
+function toggleDatabase(database: string) {
+  if (selectedDatabaseValues.value.has(database)) {
+    if (selectedDatabases.value.length === 1) return;
+    selectedDatabases.value = selectedDatabases.value.filter((item) => item !== database);
+  } else {
+    selectedDatabases.value = [...selectedDatabases.value, database];
+  }
+}
+
+const selectedNamespace = computed(() => (props.connection && props.tab ? resolveAiNamespaceSelection(props.tab, props.connection).value : ""));
+
+watch(
+  () => `${props.connection?.id ?? ""}:${props.tab?.id ?? ""}`,
+  () => {
+    selectedDatabases.value = selectedNamespace.value ? [selectedNamespace.value] : [];
+  },
+);
+watch([dbSelectOptions, selectedNamespace], syncSelectedDatabases, { immediate: true });
+
+const showAiSchemaSelector = computed(() => {
+  const connection = props.connection;
+  return !!connection && connection.db_type !== "dameng" && aiSchemaSelectionSupported(connection);
+});
+
+const aiSchemaDatabaseKey = computed(() => {
+  const connection = props.connection;
+  const tab = props.tab;
+  if (!connection || !tab) return "";
+  return tab.database || (isSingleDatabase(connection.db_type) ? "_" : "");
+});
+
+const aiSchemaOptions = computed(() => {
+  const connection = props.connection;
+  if (!connection) return [];
+  return getSchemaOptionsForDb(connection.id, aiSchemaDatabaseKey.value);
+});
+
+async function loadAiSchemas() {
+  const connection = props.connection;
+  if (!connection || !showAiSchemaSelector.value) return;
+  await loadSchemaOptions(connection.id, aiSchemaDatabaseKey.value);
+}
 
 async function loadDatabases(connection = props.connection): Promise<string[]> {
   if (!connection) return [];
@@ -1345,18 +1609,11 @@ async function changeConnection(connectionId: string) {
   }
 }
 
-function changeNamespace(value: string) {
+function changeSchema(schema: string) {
   const tab = props.tab;
-  const connection = props.connection;
-  if (!tab || !connection) return;
-  const namespace = decodeSelectableDatabaseValue(connection.db_type, value);
-  if (resolveAiNamespaceSelection(tab, connection).value === namespace) return;
+  if (!tab || tab.schema === schema) return;
   clearContextReferences();
-  if (resolveAiNamespaceSelection(tab, connection).kind === "schema") {
-    queryStore.updateSchema(tab.id, namespace || undefined);
-  } else {
-    queryStore.updateDatabase(tab.id, namespace);
-  }
+  queryStore.updateSchema(tab.id, schema || undefined);
 }
 
 function flushAssistantDeltas() {
@@ -1573,7 +1830,7 @@ function parseExplainFromData(explainData: unknown, dbType: string): ParsedExpla
     return parseOracleExplainText(explainData);
   }
   if (!explainData || typeof explainData !== "object") return undefined;
-  const supportedTypes = ["mysql", "postgres", "dameng", "questdb"] as const;
+  const supportedTypes = ["mysql", "postgres", "dameng", "questdb", "doris"] as const;
   if (!supportedTypes.includes(dbType as (typeof supportedTypes)[number])) return undefined;
   try {
     return parseExplainResult(dbType as (typeof supportedTypes)[number], explainData as import("@/types/database").QueryResult);
@@ -2653,6 +2910,9 @@ async function send() {
     clearPendingWriteGrant();
     return;
   }
+  // Capture the selection before context loading or queued run scheduling can
+  // yield to another conversation. Dameng's top-level selector is a schema.
+  const runDatabases = resolveAiNamespaceSelection(tab, connection).kind === "database" ? [...selectedDatabases.value] : [];
   const activeConfig = activeFullConfig.value;
   if (!activeConfig) {
     clearPendingWriteGrant();
@@ -2781,6 +3041,13 @@ async function send() {
     globalInstructions: promptTemplateStore.globalInstructions,
     activeTemplates: [...activeTemplates.value],
   };
+  // Remember what was actually sent for this db_type so panels opened later can
+  // restore it when no explicit per-db_type defaults are configured. This runs
+  // for empty selections too: the store clears the remembered entry so a
+  // deselected-everything send is not resurrected on the next panel open.
+  if (templateDbType.value) {
+    settings.recordLastUsedTemplates(templateDbType.value, [...activeTemplateIds.value]);
+  }
 
   const selectedTableMentions = auto ? [] : [...selectedMentions.value];
   const selectedSqlFiles = auto ? [] : [...selectedSqlFileMentions.value];
@@ -2793,7 +3060,8 @@ async function send() {
     userText: text,
   });
 
-  runMessages.push({ role: "user", content: text, mentions: selectedMessageMentions(selectedTableMentions, selectedSqlFiles, csvAttachments, imageAttachments), csvAttachments, imageAttachments });
+  const userMessage: ChatMessage = { role: "user", content: text, mentions: selectedMessageMentions(selectedTableMentions, selectedSqlFiles, csvAttachments, imageAttachments), csvAttachments, imageAttachments };
+  runMessages.push(userMessage);
   if (!auto) {
     // Save to prompt history (deduplicate consecutive duplicates)
     if (text && promptHistory.value[0] !== text) {
@@ -2810,8 +3078,41 @@ async function send() {
   }
   if (autoSendVisible) scrollToBottom({ force: true });
 
-  const requestedAction = auto ? auto.action : activeAction.value;
+  const requestedSelection: AiActionSelection = auto ? auto.action : activeAction.value;
   const requestedMode = auto ? auto.mode : assistantMode.value;
+  // A confirmed-write turn (the ✅ reply, or the segment that resumes an
+  // `awaiting_write_confirmation` run) is a continuation of the pending proposal,
+  // not a new user request: its reply text is component copy, so the Auto router
+  // must not classify it. Keeping the mode default there preserves the pre-Auto
+  // confirmation behavior (`taskContract.action` = the picker's default) instead
+  // of letting a guess describe the wrong task to the backend.
+  const confirmationContinuation = allowWriteSqlForNextRun || resumingConfirmedWrite;
+  // The "auto" picker entry is resolved HERE, before any request is assembled:
+  // `taskContract.action` must be a concrete action (the backend interpolates it
+  // into its system prompt and uses it for final-answer contract validation), and
+  // `aiSkillForAction` throws on unknown actions. Explicit selections skip the
+  // router entirely, so their behavior is unchanged (#9118).
+  let requestedAction: AiAction;
+  if (!isAutoActionSelection(requestedSelection)) {
+    requestedAction = requestedSelection;
+  } else if (confirmationContinuation) {
+    // Nothing was routed here, so no "Auto · …" chip either (the proposal card
+    // already explains what this turn does).
+    requestedAction = resolveDefaultAction(requestedMode);
+  } else {
+    requestedAction = await resolveAutoAction(text, requestedMode, runIsVisible());
+    // Keep the outcome on the message so the "Auto · <action>" chip can explain
+    // (and re-select) what the router chose.
+    userMessage.routedFrom = "auto";
+    userMessage.routedAction = requestedAction;
+  }
+  // Superseded while the classifier ran (stop/clear/switch): nothing has been
+  // sent to the backend yet, so bail the same way the template-load wait does.
+  if (!generationCanContinue()) {
+    clearPendingWriteGrant();
+    resolveDetachedRunSettled();
+    return;
+  }
   // Detect user-typed short confirmation (e.g. "可以"/"go ahead") as an alternative
   // path to the proposal ✅ button. Delegates to the shared pure function so the
   // component and its unit tests share the same gating logic.
@@ -2939,11 +3240,21 @@ async function send() {
     // paying for buildAiContext() too; it can do real backend/schema work that
     // would be entirely wasted on an already-abandoned request.
     if (!generationCanContinue()) return;
-    const context = await buildAiContext(tab, connection, {
-      mentionedTables,
-      sqlFiles,
-      csvFiles: csvAttachments,
-    });
+    const requestDatabase = runDatabases[0] ?? tab.database;
+    const context = await buildAiContext(
+      {
+        ...tab,
+        database: requestDatabase,
+        schema: runDatabases.length > 1 || requestDatabase !== tab.database ? undefined : tab.schema,
+      },
+      connection,
+      {
+        mentionedTables,
+        sqlFiles,
+        csvFiles: csvAttachments,
+      },
+    );
+    context.selectedDatabases = runDatabases;
     // Superseded while awaiting buildAiContext() above — must bail before ever
     // calling runAgentStream(), not just before writing its results. Without
     // this recheck, a clear/switch/unmount that fires during context
@@ -2972,6 +3283,7 @@ async function send() {
         confirmedConnectionId: confirmedTargetConnId,
         confirmedDatabase: confirmedTargetDb,
         confirmedSchema: confirmedTargetSchema,
+        promptCacheKey: conversationId.value || undefined,
       },
       history,
       (event: AgentEvent) => {
@@ -3073,7 +3385,10 @@ async function send() {
     if (generationCanContinue()) {
       const message = e instanceof Error ? e.message : String(e);
       const msg = runMessages[assistantIdx];
-      if (msg) msg.content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
+      if (msg) {
+        msg.content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
+        msg.failed = true;
+      }
       if (detachedRun) finishDesktopAiRun(detachedRun, "failed");
     }
   } finally {
@@ -3440,6 +3755,11 @@ function resetPendingRequestState() {
   stopStatusTimer();
   generationStatus.value = createGenerationStatus(Date.now());
   statusNow.value = Date.now();
+  // Abandon-path cleanup for the Auto router indicator too (#9118): the classifier
+  // promise clears this in its own `finally` (normal path), but a clear/switch/
+  // unmount must drop it synchronously, or "识别中" stays on screen in the next
+  // conversation until that bounded call settles.
+  routingInFlight.value = false;
 }
 
 // `alreadyCancelledSessionId`: the session id a caller (cancelStream()) has
@@ -3477,7 +3797,7 @@ function applySql(code: string) {
     emit("insertRedisCommand", code);
     return;
   }
-  emit("replaceSql", code);
+  emit("appendSql", code);
 }
 
 function executeSql(code: string) {
@@ -3551,6 +3871,73 @@ async function exportMessageAsMarkdown(msg: ChatMessage) {
   }
 }
 
+/**
+ * Conversation-level export (#6467 PR3): dumps the visible transcript as a
+ * Markdown or HTML report. Same source boundary as the UI — `visibleMessages`
+ * already drops `contextSummary` — and the builder skips it again defensively.
+ */
+/** True when the current conversation's run ended in failure/interruption —
+ *  either transport (desktop run registry, or the web fallback status map).
+ *  Background-failed turns keep their partial content without the persisted
+ *  `failed` flag, so the export also consults the run status to mark them. */
+function isCurrentRunFailed(): boolean {
+  if (!conversationId.value) return false;
+  const run = backgroundAiRunsEnabled ? desktopAiRun<ChatMessage>(conversationId.value) : undefined;
+  const status = run?.status ?? conversationRunStatus.get(conversationId.value);
+  return status === "failed" || status === "interrupted";
+}
+
+async function exportConversationAs(format: AiConversationExportFormat) {
+  try {
+    const runFailed = isCurrentRunFailed();
+    // A failed/interrupted run is always answering the LATEST user turn, so only
+    // an assistant reply that came after it can belong to the failed run. When a
+    // restart interrupts the turn before its first delta, the last reply in the
+    // transcript belongs to the preceding successful turn and must stay unmarked.
+    const transcript = visibleMessages.value;
+    let lastUserIndex = -1;
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].role === "user") {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    let failedTurnAssistant: ChatMessage | undefined;
+    for (let i = transcript.length - 1; i > lastUserIndex; i--) {
+      const candidate = transcript[i];
+      if (candidate.role === "assistant" && candidate.content) {
+        failedTurnAssistant = candidate;
+        break;
+      }
+    }
+    const result = buildAiConversationExport({
+      connectionName: props.connection?.name,
+      dateLabel: new Date().toLocaleString(),
+      messages: visibleMessages.value.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+        kind: msg.kind,
+        failed: msg.failed === true || (runFailed && msg === failedTurnAssistant),
+      })),
+      format,
+      labels: {
+        analysisLabel: t("ai.analysis"),
+        userLabel: t("ai.conversationRoleUser"),
+        assistantLabel: t("ai.conversationRoleAssistant"),
+        failedLabel: t("ai.conversationFailedMarker"),
+      },
+    });
+    if (!result) {
+      toast(t("ai.conversationExportEmpty"), 5000);
+      return;
+    }
+    await saveTextFile(result.content, result.defaultFileName, format === "markdown" ? "Markdown" : "HTML", format === "markdown" ? "md" : "html");
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    toast(t("grid.exportFailed", { message }), 5000);
+  }
+}
+
 function clearMessages() {
   // If a request is still in flight, abandon it before wiping the transcript it
   // was writing into. abandonInFlightRequest() invalidates the active generation
@@ -3596,9 +3983,10 @@ function clearAttachmentDraftState() {
 function buildConversationSnapshot(targetConversationId: string, targetMessages: ChatMessage[], connectionName: string, database: string, createdAt = new Date().toISOString()): AiConversation | null {
   if (!targetConversationId || !targetMessages.length) return null;
   const first = targetMessages.find((m) => m.role === "user" && m.kind !== "contextSummary");
+  const existingConversation = conversations.value.find((conversation) => conversation.id === targetConversationId);
   return {
     id: targetConversationId,
-    title: first ? messageTitle(first).slice(0, 50) : "Untitled",
+    title: renamedConversationTitles.get(targetConversationId) || existingConversation?.title || (first ? messageTitle(first).slice(0, 50) : "Untitled"),
     connectionName,
     database,
     messages: targetMessages.map((m) => ({
@@ -3607,6 +3995,7 @@ function buildConversationSnapshot(targetConversationId: string, targetMessages:
       ...(m.mentions?.length ? { mentions: m.mentions } : {}),
       ...(m.reasoning ? { reasoning: m.reasoning } : {}),
       ...(m.kind ? { kind: m.kind } : {}),
+      ...(m.failed ? { failed: true } : {}),
     })),
     // The conversation's single queued "send later" input, persisted so it
     // survives a restart (parent PRD §5).
@@ -3723,12 +4112,17 @@ async function persistPendingInputRecovery(conversation: AiConversation, message
       ...(m.mentions?.length ? { mentions: m.mentions } : {}),
       ...(m.reasoning ? { reasoning: m.reasoning } : {}),
       ...(m.kind ? { kind: m.kind } : {}),
+      ...(m.failed ? { failed: true } : {}),
     })),
     queuedInput: conversation.queuedInput,
     createdAt: conversation.createdAt,
     updatedAt,
   };
-  await saveAiRunState(snapshot, run).catch(() => {});
+  await saveAiRunState(snapshot, run)
+    // Recovery updates the conversation timestamp. Keep the in-memory list in
+    // the same order before the initial "restore latest" decision runs.
+    .then(() => syncPersistedConversation(snapshot))
+    .catch(() => {});
 }
 
 async function persistConversation() {
@@ -3747,6 +4141,38 @@ async function setConversationListOpen(open: boolean) {
   }
 }
 
+async function startRenameConversation(conv: AiConversation) {
+  renamingConversationId.value = conv.id;
+  renamingConversationTitle.value = conv.title;
+  await nextTick();
+  renamingConversationInput.value?.focus();
+  renamingConversationInput.value?.select();
+}
+function cancelRenameConversation() {
+  renamingConversationId.value = null;
+  renamingConversationTitle.value = "";
+}
+async function commitRenameConversation(conv: AiConversation) {
+  const title = renamingConversationTitle.value.trim().slice(0, 50);
+  if (!title || title === conv.title) return cancelRenameConversation();
+  try {
+    const activeRun = desktopAiRun<ChatMessage>(conv.id);
+    if (activeRun) await runSnapshotScheduler.save(activeRun);
+    const latestConversation = conversations.value.find((item) => item.id === conv.id) ?? conv;
+    const updated = { ...latestConversation, title, updatedAt: new Date().toISOString() };
+    // Claim the title before the async save so a throttled snapshot firing
+    // during the await window cannot persist the previous title over it.
+    renamedConversationTitles.set(conv.id, title);
+    await saveAiConversation(updated);
+    const i = conversations.value.findIndex((item) => item.id === conv.id);
+    if (i >= 0) conversations.value[i] = updated;
+  } catch {
+    toast(t("ai.conversationRenameFailed"), 5000);
+  } finally {
+    cancelRenameConversation();
+  }
+}
+
 function chatMessagesFromConversation(conv: AiConversation): ChatMessage[] {
   return conv.messages.map((m) => ({
     role: m.role as "user" | "assistant",
@@ -3755,6 +4181,7 @@ function chatMessagesFromConversation(conv: AiConversation): ChatMessage[] {
     mentions: Array.isArray(m.mentions) ? (m.mentions as AiMessageMention[]) : undefined,
     reasoning: m.reasoning,
     kind: m.kind,
+    failed: m.failed === true ? true : undefined,
   }));
 }
 
@@ -3914,10 +4341,11 @@ function discardRecoveredDraft() {
 function startNewChat() {
   clearMessages();
   showConversationList.value = false;
-  // A fresh conversation starts from the configured default mode.
+  // A fresh conversation starts from the configured default mode and, when the
+  // Settings > AI toggle says so, from the `auto` picker entry (#9118).
   const mode = settings.defaultAiMode;
   assistantMode.value = mode;
-  activeAction.value = resolveDefaultAction(mode);
+  activeAction.value = resolveDefaultActionSelection(mode);
 }
 
 /** Send-button dispatcher: with an active run on the visible conversation the
@@ -4107,6 +4535,10 @@ onMounted(async () => {
       }
     }
   }
+  initialConversationStateLoaded = true;
+  // Restore only after persisted background runs have been registered, so the
+  // selected conversation reflects the same runtime state as manual selection.
+  restoreInitialConversation();
   shikiCodeHighlighter.value = await createAiShikiCodeHighlighter({
     appearance: () => aiCodeAppearance.value,
   }).catch(() => undefined);
@@ -4234,7 +4666,12 @@ function clearContextReferences() {
   mentionError.value = "";
 }
 
-defineExpose({ triggerAction, setPrompt, addTableMention, clearContextReferences, selectConversationById });
+function focusSearch(): boolean {
+  void setConversationListOpen(true);
+  return true;
+}
+
+defineExpose({ triggerAction, setPrompt, addTableMention, clearContextReferences, selectConversationById, focusSearch });
 
 const messageRenderer = computed(() => {
   const appearance = aiCodeAppearance.value;
@@ -4274,6 +4711,17 @@ async function openExternalUrl(url: string) {
         {{ chatTitle }}
       </span>
       <ProductionContextBadge v-if="productionContext.active" compact />
+      <DropdownMenu>
+        <DropdownMenuTrigger as-child>
+          <Button variant="ghost" size="icon" class="h-6 w-6" :title="t('ai.exportConversation')" :aria-label="t('ai.exportConversation')">
+            <FileDown class="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem @click="exportConversationAs('markdown')">{{ t("ai.conversationExportMarkdown") }}</DropdownMenuItem>
+          <DropdownMenuItem @click="exportConversationAs('html')">{{ t("ai.conversationExportHtml") }}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Button variant="ghost" size="icon" class="h-6 w-6" @click="startNewChat" :title="t('ai.newChat')">
         <MessageSquarePlus class="h-3.5 w-3.5" />
       </Button>
@@ -4294,6 +4742,7 @@ async function openExternalUrl(url: string) {
             <Search class="pointer-events-none absolute left-3 h-3 w-3 text-muted-foreground" />
             <input
               ref="conversationSearchInput"
+              data-ai-conversation-search
               v-model="conversationSearchQuery"
               type="search"
               :aria-label="t('history.conversationSearch')"
@@ -4313,7 +4762,22 @@ async function openExternalUrl(url: string) {
           </div>
           <div v-else class="max-h-64 overflow-auto p-1">
             <div v-for="conv in filteredConversations" :key="conv.id" class="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted" :class="{ 'bg-muted': conv.id === conversationId }" @click="selectConversation(conv)">
-              <span class="min-w-0 flex-1 truncate" :title="conv.title">{{ conv.title }}</span>
+              <input
+                v-if="renamingConversationId === conv.id"
+                :ref="
+                  (element) => {
+                    renamingConversationInput = element as HTMLInputElement | null;
+                  }
+                "
+                v-model="renamingConversationTitle"
+                class="min-w-0 flex-1 rounded border bg-background px-1 py-0.5 text-xs"
+                @click.stop
+                @keydown.enter.stop.prevent="commitRenameConversation(conv)"
+                @keydown.esc.stop.prevent="cancelRenameConversation"
+                @blur="commitRenameConversation(conv)"
+              />
+              <span v-else class="min-w-0 flex-1 truncate" :title="conv.title">{{ conv.title }}</span>
+              <button v-if="renamingConversationId !== conv.id" type="button" class="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground" :title="t('ai.renameConversation')" @click.stop="startRenameConversation(conv)"><Pencil class="h-3 w-3" /></button>
               <span v-if="conversationRowDetail(conv).hasQueuedInput" class="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 py-px text-[10px] text-primary" :aria-label="t('ai.rowQueuedInput')" :title="t('ai.rowQueuedInput')">{{ t("ai.rowQueuedInput") }}</span>
               <span v-if="conversationRowDetail(conv).status === 'preparing' || conversationRowDetail(conv).status === 'running'" class="flex min-w-0 shrink-0 items-center gap-1 text-muted-foreground" :aria-label="t('ai.runStatusRunning')" :title="t('ai.runStatusRunning')">
                 <Loader2 class="h-3 w-3 shrink-0 animate-spin" />
@@ -4513,7 +4977,22 @@ async function openExternalUrl(url: string) {
                           <span class="truncate">{{ mention.kind === "table" ? [mention.schema, mention.table].filter(Boolean).join(".") : mention.name }}</span>
                         </button>
                       </div>
-                      <div v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</div>
+                      <div v-if="msg.content" data-ai-user-message-content class="whitespace-pre-wrap">{{ msg.content }}</div>
+                    </div>
+                    <!-- "Auto" routing outcome (#9118): which action the router picked for
+                         this message, clickable to continue with that explicit action. -->
+                    <div v-if="routedActionOf(msg)" class="mt-1 flex justify-end">
+                      <button
+                        data-ai-auto-routed-chip
+                        type="button"
+                        class="inline-flex max-w-full items-center gap-1 rounded border border-border/70 bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                        :title="t('ai.routing.switchTo', { action: actionLabelFor(routedActionOf(msg)) })"
+                        :aria-label="t('ai.routing.switchTo', { action: actionLabelFor(routedActionOf(msg)) })"
+                        @click="switchToRoutedAction(routedActionOf(msg))"
+                      >
+                        <Sparkles class="h-3 w-3 shrink-0" />
+                        <span class="truncate">{{ t("ai.routing.chip", { action: actionLabelFor(routedActionOf(msg)) }) }}</span>
+                      </button>
                     </div>
                     <div v-if="canCopyMessage(msg)" class="mt-1 flex justify-end">
                       <button
@@ -4589,6 +5068,8 @@ async function openExternalUrl(url: string) {
                   <div v-if="seg.type === 'text'" class="ai-markdown whitespace-normal" @click.capture="onMarkdownClick">
                     <div v-html="seg.html" />
                   </div>
+                  <AiChartRenderer v-else-if="seg.type === 'chart'" :spec="seg.spec" :content="seg.content" />
+                  <AiHtmlPreview v-else-if="seg.type === 'html'" :content="seg.content" :document="seg.document" />
                   <div v-else class="my-2 overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 dark:border-zinc-700/50 dark:bg-zinc-900">
                     <div class="flex items-center border-b border-zinc-200 px-3 py-1.5 text-[10px] font-medium text-zinc-600 dark:border-zinc-700/50 dark:text-zinc-400">
                       <component :is="seg.isSql ? Database : Terminal" class="h-3 w-3 mr-1.5" />
@@ -4604,7 +5085,7 @@ async function openExternalUrl(url: string) {
                           <Play class="h-3.5 w-3.5" />
                         </button>
                         <button v-if="!seg.pending && (seg.isSql || isRedisConnection)" class="rounded p-0.5 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-700 dark:hover:text-zinc-200" :title="t('ai.apply')" @click="applySql(seg.content)">
-                          <Replace class="h-3.5 w-3.5" />
+                          <ArrowDownToLine class="h-3.5 w-3.5" />
                         </button>
                         <button
                           class="rounded p-0.5 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
@@ -4619,7 +5100,7 @@ async function openExternalUrl(url: string) {
                         </button>
                       </div>
                     </div>
-                    <pre class="ai-code-block whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-zinc-900 dark:text-zinc-100"><code v-html="seg.html"></code></pre>
+                    <pre class="ai-code-block whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-3 text-xs leading-relaxed text-zinc-900 dark:text-zinc-100"><code v-html="seg.html"></code></pre>
                   </div>
                 </template>
                 <div v-if="msg === proposalConfirmMessage" class="mt-2 flex gap-2" :title="t('ai.proposalConfirmTitle')">
@@ -4655,6 +5136,15 @@ async function openExternalUrl(url: string) {
               </div>
             </div>
           </template>
+
+          <!-- "Auto" routing in flight (#9118). Only the slow path (classifier)
+               shows this — the rule layer resolves instantly. Rendered while the
+               user message is already visible and before the assistant
+               placeholder exists, so the send never looks stuck. -->
+          <div v-if="routingInFlight" data-ai-auto-routing class="flex min-w-0 items-center gap-[7px] text-xs text-muted-foreground">
+            <Loader2 class="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+            <span class="truncate">{{ t("ai.routing.recognizing") }}</span>
+          </div>
 
           <!-- Live generation-status line (Issue #6743 feature 1). Replaces the old
                "Thinking..." placeholder and covers the WHOLE generation period
@@ -4705,13 +5195,13 @@ async function openExternalUrl(url: string) {
     </div>
 
     <div class="p-2">
-      <div ref="promptPanelRef" class="relative rounded-[6px] border bg-background">
+      <div ref="promptPanelRef" class="ai-prompt-context-container relative rounded-[6px] border bg-background">
         <div v-if="isAttachmentDragging" class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-[6px] border-2 border-dashed border-primary bg-background/90 text-sm font-medium text-foreground shadow-sm backdrop-blur-sm">
           {{ t("ai.attachmentDropHint") }}
         </div>
         <div class="resize-handle" @mousedown="startResize"></div>
         <div class="px-2 pb-2 pt-1">
-          <div class="flex items-center gap-1 mb-1 text-xs text-foreground/80">
+          <div data-ai-composer-context-row :class="['ai-prompt-context-row mb-1 flex items-center gap-x-1 text-xs text-foreground/80', showAiSchemaSelector && 'ai-prompt-context-row--schema']">
             <template v-if="connectionStore.connections.length">
               <DatabaseIcon v-if="connection" :db-type="connectionIconType(connection)" class="h-3 w-3 shrink-0" />
               <Server v-else class="h-3 w-3 shrink-0" />
@@ -4722,44 +5212,77 @@ async function openExternalUrl(url: string) {
                 :placeholder="t('editor.selectConnection')"
                 :search-placeholder="t('editor.searchConnection')"
                 :empty-text="t('grid.noSearchResults')"
-                trigger-class="h-5 px-1 text-foreground/80"
+                :trigger-class="['h-5 px-1 text-foreground/80', showAiSchemaSelector && 'min-w-0 max-w-56 flex-1']"
                 trigger-icon-class="h-3 w-3"
                 list-class="w-72 max-w-[calc(100vw-2rem)]"
                 @update:model-value="(v) => changeConnection(v)"
               />
               <template v-if="connection">
                 <Database class="h-3 w-3 shrink-0 text-foreground/40" />
-                <Select
-                  :model-value="selectedDatabaseSelectValue"
-                  @update:model-value="
-                    (v) => {
-                      if (typeof v === 'string') changeNamespace(v);
-                    }
-                  "
+                <Popover
                   @update:open="
                     (open: boolean) => {
                       if (open) loadDatabases();
                     }
                   "
                 >
-                  <SelectTrigger class="h-5 w-auto border-0 rounded-md bg-transparent dark:bg-transparent p-0 px-1 text-xs text-foreground/80 shadow-none focus:ring-0 focus-visible:ring-0 [&_svg]:size-3">
-                    <SelectValue :placeholder="t('editor.selectDatabase')">{{ selectedDatabaseLabel }}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="option in dbSelectOptions" :key="option.value" :value="option.value">{{ option.label }}</SelectItem>
-                    <SelectItem v-if="!dbSelectOptions.length && connection && tab" :value="selectedDatabaseSelectValue">{{ selectedDatabaseLabel }}</SelectItem>
-                  </SelectContent>
-                </Select>
+                  <PopoverTrigger as-child>
+                    <Button variant="ghost" :class="['h-5 max-w-64 justify-start border-0 p-0 px-1 text-xs font-normal text-foreground/80 shadow-none', showAiSchemaSelector && 'min-w-0 flex-1']">
+                      <span class="truncate">{{ selectedDatabaseLabel }}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" class="w-64 p-1">
+                    <div class="relative mb-1 flex items-center border-b px-2 py-1">
+                      <Search class="pointer-events-none absolute left-3 h-3 w-3 text-muted-foreground" />
+                      <input v-model="databaseSearchQuery" type="search" class="h-6 w-full bg-transparent pl-5 text-xs outline-none placeholder:text-muted-foreground" :placeholder="t('ai.searchDatabases')" />
+                    </div>
+                    <button v-if="selectedDatabases.length > 1" type="button" class="mb-1 flex w-full items-center justify-end gap-1 border-b px-2 py-1 text-xs" @click.stop="selectedDatabases = []"><X class="h-3 w-3" />{{ t("ai.clearDatabaseSelection") }}</button>
+                    <div class="max-h-64 overflow-y-auto overscroll-contain">
+                      <button v-for="option in filteredDbSelectOptions" :key="option.value" type="button" class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted" @click="toggleDatabase(option.database)">
+                        <Check :class="['h-4 w-4', selectedDatabaseValues.has(option.database) ? 'opacity-100' : 'opacity-0']" />
+                        <span class="truncate">{{ option.label }}</span>
+                      </button>
+                      <div v-if="!filteredDbSelectOptions.length" class="px-2 py-1.5 text-sm text-muted-foreground">{{ t("ai.noDatabasesFound") }}</div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+                <template v-if="showAiSchemaSelector">
+                  <Layers class="h-3 w-3 shrink-0 text-foreground/40" />
+                  <SearchableSelect
+                    :model-value="tab?.schema || ''"
+                    :options="aiSchemaOptions.length ? aiSchemaOptions : tab?.schema ? [tab.schema] : []"
+                    :placeholder="t('editor.selectSchema')"
+                    :search-placeholder="t('editor.searchSchema')"
+                    :empty-text="t('grid.noSearchResults')"
+                    :loading-text="t('common.loading')"
+                    :loading="isLoadingSchemas(connection.id, aiSchemaDatabaseKey)"
+                    trigger-variant="ghost"
+                    trigger-class="h-5 min-w-0 max-w-36 flex-1 p-0 px-1 text-foreground/80"
+                    trigger-icon-class="h-3 w-3"
+                    list-class="w-56"
+                    @update:model-value="changeSchema"
+                    @update:open="
+                      (open: boolean) => {
+                        if (open) loadAiSchemas().catch(() => {});
+                      }
+                    "
+                  />
+                </template>
               </template>
             </template>
-            <span class="min-w-0 flex-1" />
+            <span class="ai-prompt-context-spacer min-w-0 flex-1" />
             <!-- Template selector -->
             <Popover v-model:open="showTemplateSelector">
               <PopoverTrigger as-child>
-                <button type="button" class="flex min-w-0 max-w-[40%] items-center gap-1 rounded-[6px] border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" :aria-label="templateSelectorTriggerLabel" :title="templateSelectorTriggerLabel">
+                <button
+                  type="button"
+                  class="ai-template-selector-trigger flex min-w-0 max-w-[40%] items-center gap-1 rounded-[6px] border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                  :aria-label="templateSelectorTriggerLabel"
+                  :title="templateSelectorTriggerLabel"
+                >
                   <FileCode class="h-3 w-3" />
-                  <span class="truncate">{{ templateSelectorTriggerLabel }}</span>
-                  <svg class="h-3 w-3 shrink-0 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6" /></svg>
+                  <span class="ai-template-selector-label truncate">{{ templateSelectorTriggerLabel }}</span>
+                  <svg class="ai-template-selector-chevron h-3 w-3 shrink-0 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6" /></svg>
                 </button>
               </PopoverTrigger>
               <PopoverContent align="end" class="w-64 gap-0 p-1.5">
@@ -4777,7 +5300,10 @@ async function openExternalUrl(url: string) {
                           <Check v-if="activeTemplateIds.includes(tpl.id)" class="h-3 w-3" />
                         </div>
                         <div class="flex-1 truncate text-left">
-                          <div class="font-medium">{{ tpl.name }}</div>
+                          <div class="flex items-center gap-1 font-medium">
+                            <span class="truncate">{{ tpl.name }}</span>
+                            <Star v-if="isDefaultTemplateForCurrentDb(tpl.id)" class="h-3 w-3 shrink-0 text-amber-500" :title="t('ai.templateDefaultBadgeTitle', { type: currentDbTypeLabel() })" />
+                          </div>
                           <div class="text-[10px] text-muted-foreground truncate">{{ tpl.content.slice(0, 60) }}</div>
                         </div>
                       </button>
@@ -5001,7 +5527,13 @@ async function openExternalUrl(url: string) {
               <Popover v-model:open="providerSelectorOpen">
                 <PopoverTrigger as-child>
                   <button type="button" class="min-w-0 flex shrink items-center gap-1.5 max-w-[220px] rounded-[6px] border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
-                    <AiProviderLogo :provider="activeFullConfig?.provider ?? 'claude'" :label="aiProviderLabel(activeFullConfig?.provider ?? 'claude', t)" :icon-slug="AI_PROVIDER_PRESETS[activeFullConfig?.provider ?? 'claude']?.iconSlug" class="h-3 w-3 shrink-0" />
+                    <AiProviderLogo
+                      :provider="activeFullConfig?.provider ?? 'claude'"
+                      :label="aiConfigProviderLabel(activeFullConfig)"
+                      :icon-slug="activeFullConfig ? getAiProviderPreset(activeFullConfig.provider, activeFullConfig.endpoint).iconSlug : AI_PROVIDER_PRESETS.claude.iconSlug"
+                      :icon-path="activeFullConfig ? getAiProviderPreset(activeFullConfig.provider, activeFullConfig.endpoint).iconPath : undefined"
+                      class="h-3 w-3 shrink-0"
+                    />
                     <span class="min-w-0 truncate">{{ activeFullConfig?.model || t("ai.selectModel") }}</span>
                     <svg class="h-3 w-3 shrink-0 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6" /></svg>
                   </button>
@@ -5015,7 +5547,13 @@ async function openExternalUrl(url: string) {
                     <div v-for="(config, configIndex) in configuredProviders" :key="config.id" class="relative">
                       <button type="button" class="sticky top-0 z-10 flex w-full items-center gap-2 rounded-sm bg-popover px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted" :aria-expanded="!isModelConfigCollapsed(config.id)" @click="toggleModelConfig(config.id)">
                         <ChevronRight class="h-3.5 w-3.5 shrink-0 transition-transform" :class="{ 'rotate-90': !isModelConfigCollapsed(config.id) }" />
-                        <AiProviderLogo :provider="config.provider" :label="AI_PROVIDER_PRESETS[config.provider]?.label ?? config.provider" :icon-slug="AI_PROVIDER_PRESETS[config.provider]?.iconSlug" class="h-3.5 w-3.5 shrink-0" />
+                        <AiProviderLogo
+                          :provider="config.provider"
+                          :label="getAiProviderPreset(config.provider, config.endpoint).label"
+                          :icon-slug="getAiProviderPreset(config.provider, config.endpoint).iconSlug"
+                          :icon-path="getAiProviderPreset(config.provider, config.endpoint).iconPath"
+                          class="h-3.5 w-3.5 shrink-0"
+                        />
                         <span class="min-w-0 flex-1 truncate font-medium">{{ config.name }}</span>
                         <Loader2 v-if="getModelCatalog(config.id).status === 'loading'" class="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
                         <span v-if="config.isDefault" class="ml-auto text-[10px] text-muted-foreground">{{ t("ai.default") }}</span>
@@ -5242,6 +5780,30 @@ async function openExternalUrl(url: string) {
 </template>
 
 <style scoped>
+.ai-prompt-context-container {
+  container-type: inline-size;
+}
+
+@container (max-width: 28rem) {
+  .ai-prompt-context-row--schema .ai-prompt-context-spacer {
+    flex: 0 0 0;
+  }
+
+  .ai-prompt-context-row--schema .ai-template-selector-trigger {
+    flex: 0 0 1.5rem;
+    width: 1.5rem;
+    max-width: 1.5rem;
+    height: 1.5rem;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .ai-prompt-context-row--schema .ai-template-selector-label,
+  .ai-prompt-context-row--schema .ai-template-selector-chevron {
+    display: none;
+  }
+}
+
 .ai-markdown :deep(h1) {
   font-size: 1em;
   font-weight: 700;
@@ -5380,6 +5942,10 @@ html.dbx-legacy-webview.dark .ai-markdown :deep(.ai-markdown-table-wrap:hover::-
 
 .ai-message-scroll :deep([data-slot="scroll-area-viewport"]) {
   overflow-anchor: none;
+}
+
+.ai-message-scroll :deep([data-ai-user-message-content]) {
+  overflow-wrap: anywhere;
 }
 
 .resize-handle {

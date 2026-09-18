@@ -541,6 +541,9 @@ fn clickhouse_index_from_skipping_row(row: &[serde_json::Value]) -> IndexInfo {
         included_columns: None,
         comment: None,
         key_is_expression: Vec::new(),
+        column_opclasses: vec![],
+        key_options: Vec::new(),
+        constraint_backed: false,
     }
 }
 
@@ -560,6 +563,7 @@ fn clickhouse_table_info_from_row(row: &[serde_json::Value]) -> TableInfo {
     TableInfo {
         name: row.first().and_then(|v| v.as_str()).unwrap_or("").to_string(),
         table_type: table_type.to_string(),
+        valid: None,
         comment: row.get(2).and_then(|v| v.as_str()).filter(|value| !value.is_empty()).map(str::to_string),
         parent_schema: None,
         parent_name: None,
@@ -792,6 +796,9 @@ pub async fn list_indexes(client: &ChClient, database: &str, table: &str) -> Res
             included_columns: None,
             comment: None,
             key_is_expression: Vec::new(),
+            column_opclasses: vec![],
+            key_options: Vec::new(),
+            constraint_backed: false,
         });
     }
 

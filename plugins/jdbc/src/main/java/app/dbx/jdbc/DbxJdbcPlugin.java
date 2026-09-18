@@ -3979,6 +3979,9 @@ public final class DbxJdbcPlugin {
         if (isHive2RoutinesConnection(connection)) {
             String routineName = stripRoutineSignature(name);
             String normalizedType = normalizeObjectType(objectType);
+            if ("VIEW".equals(normalizedType) || "TABLE".equals(normalizedType) || "MATERIALIZED_VIEW".equals(normalizedType)) {
+                return hive2ShowCreateObjectSource(conn, database, schema, name, objectType);
+            }
 
             LinkedHashSet<String> candidates = new LinkedHashSet<>();
             String db = emptyToNull(database);
@@ -4025,7 +4028,151 @@ public final class DbxJdbcPlugin {
             throw new SQLException("Object source not found");
         }
 
+        if ("TABLE".equals(normalizeObjectType(objectType))) {
+            return genericTableObjectSource(connection, database, schema, name);
+        }
+
         throw new SQLException("Object source is not supported by this JDBC driver");
+    }
+
+    /**
+     * Table source for generic external JDBC drivers (JDBCX wrappers, custom
+     * protocol drivers) that expose no vendor DDL statement: assemble CREATE
+     * TABLE from {@code DatabaseMetaData} via the same readers the browse RPCs
+     * use, so driver quirks (catalog fallback, PK marking, tolerance of
+     * unimplemented metadata methods) apply identically.
+     */
+    private static JsonNode genericTableObjectSource(JsonNode connection, String database, String schema, String table)
+        throws SQLException {
+        JsonNode columns = getColumns(connection, database, schema, table);
+        if (!columns.isArray() || columns.isEmpty()) {
+            throw new SQLException("Object source not found");
+        }
+        JsonNode indexes = listIndexes(connection, database, schema, table);
+
+        JsonNode foreignKeys;
+        try (Connection conn = openConnection(connection)) {
+            DatabaseMetaData meta = conn.getMetaData();
+            JdbcDriverQuirks quirks = driverQuirks(connection);
+            String catalog = metadataCatalog(database, quirks);
+            String schemaPattern = resolveSchemaPattern(meta, database, schema, quirks);
+            foreignKeys = listGenericForeignKeys(meta, catalog, schemaPattern, table);
+        }
+
+        String source = GenericJdbcDdlBuilder.buildTableDdl(
+            emptyToNull(schema) != null ? schema : emptyToNull(database),
+            table,
+            columns,
+            indexes,
+            foreignKeys
+        );
+        ObjectNode item = MAPPER.createObjectNode();
+        item.put("name", table);
+        item.put("object_type", "TABLE");
+        putNullable(item, "schema", emptyToNull(schema));
+        item.put("source", source);
+        return item;
+    }
+
+    private static JsonNode listGenericForeignKeys(DatabaseMetaData meta, String catalog, String schemaPattern, String table) {
+        ArrayNode result = MAPPER.createArrayNode();
+        try (ResultSet rs = meta.getImportedKeys(catalog, schemaPattern, table)) {
+            while (rs != null && rs.next()) {
+                String column = rs.getString("FKCOLUMN_NAME");
+                String refTable = rs.getString("PKTABLE_NAME");
+                String refColumn = rs.getString("PKCOLUMN_NAME");
+                if (column == null || column.isBlank() || refTable == null || refTable.isBlank()
+                    || refColumn == null || refColumn.isBlank()) {
+                    continue;
+                }
+                ObjectNode item = MAPPER.createObjectNode();
+                item.put("name", rs.getString("FK_NAME"));
+                item.put("column", column);
+                item.put("ref_table", refTable);
+                item.put("ref_column", refColumn);
+                result.add(item);
+            }
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+            // Foreign keys are optional detail; generic DDL must still succeed.
+        }
+        return result;
+    }
+
+    private static JsonNode hive2ShowCreateObjectSource(
+        Connection conn,
+        String database,
+        String schema,
+        String name,
+        String objectType
+    ) throws SQLException {
+        LinkedHashSet<String> candidates = hive2DatabaseCandidates(database, schema);
+        if (candidates.isEmpty()) {
+            throw new SQLException("Object source requires database context for Hive/Inceptor objects");
+        }
+
+        SQLException lastError = null;
+        for (String candidateSchema : candidates) {
+            String sql = "SHOW CREATE TABLE " + qualifiedHiveName(candidateSchema, name);
+            try (Statement statement = conn.createStatement();
+                 ResultSet rs = statement.executeQuery(sql)) {
+                StringBuilder source = new StringBuilder();
+                while (rs.next()) {
+                    String line = rs.getString(1);
+                    if (line == null || line.isBlank()) {
+                        continue;
+                    }
+                    if (!source.isEmpty()) {
+                        source.append('\n');
+                    }
+                    source.append(line);
+                }
+                if (source.isEmpty()) {
+                    continue;
+                }
+                if (source.charAt(source.length() - 1) != '\n') {
+                    source.append('\n');
+                }
+                ObjectNode item = MAPPER.createObjectNode();
+                item.put("name", name);
+                item.put("object_type", objectType);
+                putNullable(item, "schema", emptyToNull(schema) != null ? schema : candidateSchema);
+                putNullable(item, "source", source.toString());
+                return item;
+            } catch (SQLException error) {
+                lastError = error;
+            }
+        }
+
+        if (lastError != null) {
+            throw lastError;
+        }
+        throw new SQLException("Object source not found");
+    }
+
+    private static LinkedHashSet<String> hive2DatabaseCandidates(String database, String schema) {
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        String db = emptyToNull(database);
+        if (db != null) {
+            candidates.add(db);
+        }
+        String sc = emptyToNull(schema);
+        if (sc != null) {
+            candidates.add(sc);
+        }
+        return candidates;
+    }
+
+    private static String qualifiedHiveName(String schema, String table) {
+        String trimmedSchema = schema == null ? "" : schema.trim();
+        String trimmedTable = table == null ? "" : table.trim();
+        if (trimmedSchema.isEmpty()) {
+            return quoteHiveBacktickIdentifier(trimmedTable);
+        }
+        return quoteHiveBacktickIdentifier(trimmedSchema) + "." + quoteHiveBacktickIdentifier(trimmedTable);
+    }
+
+    private static String quoteHiveBacktickIdentifier(String identifier) {
+        return "`" + identifier.replace("`", "``") + "`";
     }
 
     private static String oracleMetadataObjectType(String objectType) {
@@ -4129,6 +4276,15 @@ public final class DbxJdbcPlugin {
                 return boolValue;
             }
             return null;
+        }
+
+        if (columnType == Types.CHAR
+            || columnType == Types.VARCHAR
+            || columnType == Types.LONGVARCHAR
+            || columnType == Types.NCHAR
+            || columnType == Types.NVARCHAR
+            || columnType == Types.LONGNVARCHAR) {
+            return rs.getString(index);
         }
 
         // Phoenix exposes VARBINARY_ENCODED as a private type id (9000). Read it through the

@@ -1041,6 +1041,9 @@ pub enum AgentCapability {
     MongoCloneCollection,
     MongoRunCommand,
     MongoInsertDocuments,
+    MongoReplaceDocument,
+    MongoBulkWrite,
+    MongoFindCursor,
     MultiSession,
     StructuredErrorV1,
 }
@@ -1123,7 +1126,7 @@ fn parse_agent_rpc_error_header(header: &str) -> (Option<i64>, String) {
 }
 
 impl AgentCapability {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 27] = [
         Self::Connect,
         Self::TestConnection,
         Self::Metadata,
@@ -1146,6 +1149,9 @@ impl AgentCapability {
         Self::MongoCloneCollection,
         Self::MongoRunCommand,
         Self::MongoInsertDocuments,
+        Self::MongoReplaceDocument,
+        Self::MongoBulkWrite,
+        Self::MongoFindCursor,
         Self::MultiSession,
         Self::StructuredErrorV1,
     ];
@@ -1174,6 +1180,9 @@ impl AgentCapability {
             Self::MongoCloneCollection => "mongo_clone_collection",
             Self::MongoRunCommand => "mongo_run_command",
             Self::MongoInsertDocuments => "mongo_insert_documents",
+            Self::MongoReplaceDocument => "mongo_replace_document",
+            Self::MongoBulkWrite => "mongo_bulk_write",
+            Self::MongoFindCursor => "mongo_find_cursor",
             Self::MultiSession => "multi_session",
             Self::StructuredErrorV1 => "structured_error_v1",
         }
@@ -1196,6 +1205,7 @@ pub enum AgentMethod {
     ListTables,
     ListObjects,
     ListDataTypes,
+    ListXuguTablespaces,
     CompletionAssistantSearchV1,
     GetObjectSource,
     GetColumns,
@@ -1283,6 +1293,7 @@ impl AgentMethod {
             Self::ListTables => "list_tables",
             Self::ListObjects => "list_objects",
             Self::ListDataTypes => "list_data_types",
+            Self::ListXuguTablespaces => "list_xugu_tablespaces",
             Self::CompletionAssistantSearchV1 => "completion_assistant_search_v1",
             Self::GetObjectSource => "get_object_source",
             Self::GetTableDdl => "get_table_ddl",
@@ -1374,13 +1385,18 @@ pub enum MongoAgentMethod {
     InsertDocuments,
     UpdateDocument,
     UpdateDocuments,
+    ReplaceDocument,
+    BulkWrite,
     DeleteDocument,
     DeleteDocuments,
     RunCommand,
+    StartFindCursor,
+    FetchFindCursor,
+    CloseFindCursor,
 }
 
 impl MongoAgentMethod {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 27] = [
         Self::ListDatabases,
         Self::ListCollections,
         Self::FindDocuments,
@@ -1400,9 +1416,14 @@ impl MongoAgentMethod {
         Self::InsertDocuments,
         Self::UpdateDocument,
         Self::UpdateDocuments,
+        Self::ReplaceDocument,
+        Self::BulkWrite,
         Self::DeleteDocument,
         Self::DeleteDocuments,
         Self::RunCommand,
+        Self::StartFindCursor,
+        Self::FetchFindCursor,
+        Self::CloseFindCursor,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -1426,9 +1447,14 @@ impl MongoAgentMethod {
             Self::InsertDocuments => "insert_documents",
             Self::UpdateDocument => "update_document",
             Self::UpdateDocuments => "update_documents",
+            Self::ReplaceDocument => "replace_document",
+            Self::BulkWrite => "bulk_write",
             Self::DeleteDocument => "delete_document",
             Self::DeleteDocuments => "delete_documents",
             Self::RunCommand => "run_command",
+            Self::StartFindCursor => "start_find_cursor",
+            Self::FetchFindCursor => "fetch_find_cursor",
+            Self::CloseFindCursor => "close_find_cursor",
         }
     }
 }
@@ -2052,6 +2078,10 @@ impl AgentDriverClient {
         }
         if let Some(object_types) = object_types {
             params["object_types"] = serde_json::json!(object_types);
+            // Agent drivers (hive-go, oracle-go, etc.) read the object-type
+            // filter from a camelCase field; keep both spellings so existing
+            // agents don't need a coordinated rollout.
+            params["objectTypes"] = serde_json::json!(object_types);
         }
         self.call_method_with_timeout(AgentMethod::ListTables, params, timeout_duration).await
     }
@@ -2087,6 +2117,7 @@ impl AgentDriverClient {
         }
         if let Some(object_types) = object_types {
             params["object_types"] = serde_json::json!(object_types);
+            params["objectTypes"] = serde_json::json!(object_types);
         }
         self.call_method_with_timeout(AgentMethod::ListObjects, params, timeout_duration).await
     }
@@ -2102,6 +2133,18 @@ impl AgentDriverClient {
             timeout_duration,
         )
         .await
+    }
+
+    pub async fn list_xugu_tablespaces<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        database: Option<&str>,
+        timeout_duration: Option<Duration>,
+    ) -> Result<T, String> {
+        let params = database
+            .filter(|database| !database.trim().is_empty())
+            .map(|database| serde_json::json!({ "database": database }))
+            .unwrap_or_else(|| serde_json::json!({}));
+        self.call_method_with_timeout(AgentMethod::ListXuguTablespaces, params, timeout_duration).await
     }
 
     pub async fn completion_assistant_search<T: DeserializeOwned + Send + 'static>(
@@ -2476,6 +2519,22 @@ impl AgentDriverClient {
         self.call_method(AgentMethod::StartTableRead, serde_json::to_value(params).map_err(|e| e.to_string())?).await
     }
 
+    pub async fn start_table_read_with_timeout_and_cancel<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        params: AgentTableReadStartParams,
+        timeout_duration: Option<Duration>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<T, String> {
+        self.invalidate_cached_query();
+        self.call_method_with_timeout_and_cancel(
+            AgentMethod::StartTableRead,
+            serde_json::to_value(params).map_err(|e| e.to_string())?,
+            timeout_duration,
+            cancel_token,
+        )
+        .await
+    }
+
     pub async fn fetch_table_read_page<T: DeserializeOwned + Send + 'static>(
         &mut self,
         session_id: &str,
@@ -2485,6 +2544,23 @@ impl AgentDriverClient {
             AgentMethod::FetchTableReadPage,
             serde_json::to_value(AgentTableReadPageParams { session_id: session_id.to_string(), page_size })
                 .map_err(|e| e.to_string())?,
+        )
+        .await
+    }
+
+    pub async fn fetch_table_read_page_with_timeout_and_cancel<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        session_id: &str,
+        page_size: usize,
+        timeout_duration: Option<Duration>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<T, String> {
+        self.call_method_with_timeout_and_cancel(
+            AgentMethod::FetchTableReadPage,
+            serde_json::to_value(AgentTableReadPageParams { session_id: session_id.to_string(), page_size })
+                .map_err(|e| e.to_string())?,
+            timeout_duration,
+            cancel_token,
         )
         .await
     }
@@ -2506,9 +2582,15 @@ impl AgentDriverClient {
         database: Option<&str>,
         statements: &[String],
         schema: Option<&str>,
+        timeout_duration: Option<Duration>,
     ) -> Result<T, String> {
         self.invalidate_cached_query();
-        self.call_method(AgentMethod::ExecuteTransaction, agent_transaction_params(database, statements, schema)).await
+        self.call_method_with_timeout(
+            AgentMethod::ExecuteTransaction,
+            agent_transaction_params(database, statements, schema),
+            timeout_duration,
+        )
+        .await
     }
 
     pub async fn execute_transaction_typed<T: DeserializeOwned + Send + 'static>(
@@ -2516,10 +2598,15 @@ impl AgentDriverClient {
         database: Option<&str>,
         statements: &[String],
         schema: Option<&str>,
+        timeout_duration: Option<Duration>,
     ) -> Result<T, AgentCallError> {
         self.invalidate_cached_query();
-        self.call_method_typed(AgentMethod::ExecuteTransaction, agent_transaction_params(database, statements, schema))
-            .await
+        self.call_method_typed_with_timeout(
+            AgentMethod::ExecuteTransaction,
+            agent_transaction_params(database, statements, schema),
+            timeout_duration,
+        )
+        .await
     }
 
     pub async fn begin_manual_transaction<T: DeserializeOwned + Send + 'static>(
@@ -2726,6 +2813,27 @@ impl AgentDriverClient {
         self.call_mongo_method(MongoAgentMethod::InsertDocuments, params).await
     }
 
+    pub async fn mongo_start_find_cursor<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        params: Value,
+    ) -> Result<T, String> {
+        self.call_mongo_method(MongoAgentMethod::StartFindCursor, params).await
+    }
+
+    pub async fn mongo_fetch_find_cursor<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        params: Value,
+    ) -> Result<T, String> {
+        self.call_mongo_method(MongoAgentMethod::FetchFindCursor, params).await
+    }
+
+    pub async fn mongo_close_find_cursor<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        params: Value,
+    ) -> Result<T, String> {
+        self.call_mongo_method(MongoAgentMethod::CloseFindCursor, params).await
+    }
+
     pub async fn mongo_update_document<T: DeserializeOwned + Send + 'static>(
         &mut self,
         params: Value,
@@ -2738,6 +2846,17 @@ impl AgentDriverClient {
         params: Value,
     ) -> Result<T, String> {
         self.call_mongo_method(MongoAgentMethod::UpdateDocuments, params).await
+    }
+
+    pub async fn mongo_replace_document<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        params: Value,
+    ) -> Result<T, String> {
+        self.call_mongo_method(MongoAgentMethod::ReplaceDocument, params).await
+    }
+
+    pub async fn mongo_bulk_write<T: DeserializeOwned + Send + 'static>(&mut self, params: Value) -> Result<T, String> {
+        self.call_mongo_method(MongoAgentMethod::BulkWrite, params).await
     }
 
     pub async fn mongo_delete_document<T: DeserializeOwned + Send + 'static>(
@@ -2895,6 +3014,9 @@ pub fn agent_supports_capability(handshake: Option<&AgentHandshake>, capability:
             | AgentCapability::MongoCloneCollection
             | AgentCapability::MongoRunCommand
             | AgentCapability::MongoInsertDocuments
+            | AgentCapability::MongoReplaceDocument
+            | AgentCapability::MongoBulkWrite
+            | AgentCapability::MongoFindCursor
     ) {
         return handshake.map(|value| value.supports(capability)).unwrap_or(false);
     }
@@ -4109,7 +4231,7 @@ mod tests {
         let script_path = std::env::temp_dir().join(format!("dbx-agent-{prefix}-{}.py", uuid::Uuid::new_v4()));
         std::fs::write(
             &script_path,
-            r#"import json, sys, threading
+            r#"import json, sys, threading, time
 print(json.dumps({'ready': True}), flush=True)
 state_lock = threading.Lock()
 output_lock = threading.Lock()
@@ -4160,7 +4282,7 @@ def respond(req):
 
     session_id = params.get('agentSessionId', '__legacy__')
     with session_lock(session_id):
-        if method == 'execute_query':
+        if method in ('execute_query', 'start_table_read'):
             sql = params.get('sql', '')
             with state_lock:
                 query_count += 1
@@ -4175,7 +4297,16 @@ def respond(req):
             if sql == 'error':
                 write_response(req, error='synthetic query error')
                 return
+            if method == 'start_table_read':
+                write_response(req, {'rows': [], 'session_id': None, 'has_more': False})
+                return
             write_response(req, {'sql': sql, 'count': current_count})
+            return
+        if method == 'execute_transaction':
+            statements = params.get('statements', [])
+            if statements == ['slow']:
+                time.sleep(1.2)
+            write_response(req, {'ok': True})
             return
         write_response(req, {'ok': True})
 
@@ -4273,6 +4404,34 @@ for line in sys.stdin:
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(runtime_counter(&runtime, "cancel_count").await, 2);
+
+        runtime.kill();
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[tokio::test]
+    async fn table_read_uses_the_supplied_rpc_timeout() {
+        let (runtime, script_path) = spawn_stateful_test_runtime("table-read-timeout-test").await;
+        let mut client = AgentDriverClient::shared_session(runtime.clone(), "table-read-session".to_string());
+        let params = AgentTableReadStartParams {
+            sql: "slow table export".to_string(),
+            database: Some("TEST".to_string()),
+            schema: Some("APP".to_string()),
+            page_size: 100,
+            max_rows: 100,
+            fetch_size: Some(100),
+            timeout_secs: Some(1),
+        };
+
+        let error = client
+            .start_table_read_with_timeout_and_cancel::<serde_json::Value>(
+                params,
+                Some(Duration::from_millis(75)),
+                Some(CancellationToken::new()),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("Agent RPC call timed out"));
 
         runtime.kill();
         let _ = std::fs::remove_file(script_path);
@@ -4403,7 +4562,10 @@ for line in sys.stdin:
             )
             .await
             .unwrap();
-        client.execute_transaction::<serde_json::Value>(None, &["UPDATE t SET a = 2".to_string()], None).await.unwrap();
+        client
+            .execute_transaction::<serde_json::Value>(None, &["UPDATE t SET a = 2".to_string()], None, None)
+            .await
+            .unwrap();
         client
             .execute_query_cached_with_timeout::<serde_json::Value>(
                 "transaction-invalidation".to_string(),
@@ -4427,6 +4589,42 @@ for line in sys.stdin:
         assert!(client.cached_query.is_some());
         client.disconnect().await.unwrap();
         assert!(client.cached_query.is_none());
+
+        runtime.kill();
+        let _ = std::fs::remove_file(script_path);
+    }
+
+    #[tokio::test]
+    async fn execute_transaction_typed_applies_timeout_when_agent_stalls() {
+        let (runtime, script_path) = spawn_stateful_test_runtime("transaction-timeout-test").await;
+        let mut client = AgentDriverClient::shared_session(runtime.clone(), "transaction-timeout-session".to_string());
+
+        // A single slow statement with a short timeout must surface a typed timeout
+        // error instead of waiting for the agent indefinitely.
+        let error = client
+            .execute_transaction_typed::<serde_json::Value>(
+                None,
+                &["slow".to_string()],
+                None,
+                Some(Duration::from_millis(75)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AgentCallError::Timeout {
+                stage: AgentErrorStage::Execute,
+                operation_outcome: AgentOperationOutcome::Unknown,
+            }
+        ));
+
+        // A fast transaction with a comfortable timeout still succeeds and
+        // invalidates the cached query, proving the timeout path did not break it.
+        let result: serde_json::Value = client
+            .execute_transaction_typed(None, &["UPDATE t SET a = 2".to_string()], None, Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        assert_eq!(result, serde_json::json!({"ok": true}));
 
         runtime.kill();
         let _ = std::fs::remove_file(script_path);
@@ -4852,9 +5050,12 @@ for line in sys.stdin:
         assert_eq!(AgentCapability::MongoCloneCollection.as_str(), "mongo_clone_collection");
         assert_eq!(AgentCapability::MongoRunCommand.as_str(), "mongo_run_command");
         assert_eq!(AgentCapability::MongoInsertDocuments.as_str(), "mongo_insert_documents");
+        assert_eq!(AgentCapability::MongoReplaceDocument.as_str(), "mongo_replace_document");
+        assert_eq!(AgentCapability::MongoBulkWrite.as_str(), "mongo_bulk_write");
+        assert_eq!(AgentCapability::MongoFindCursor.as_str(), "mongo_find_cursor");
         assert_eq!(AgentCapability::MultiSession.as_str(), "multi_session");
         assert_eq!(AgentCapability::StructuredErrorV1.as_str(), "structured_error_v1");
-        assert_eq!(AgentCapability::ALL.len(), 24);
+        assert_eq!(AgentCapability::ALL.len(), 27);
     }
 
     #[test]
@@ -4868,6 +5069,7 @@ for line in sys.stdin:
         assert_eq!(AgentMethod::ListTables.as_str(), "list_tables");
         assert_eq!(AgentMethod::ListObjects.as_str(), "list_objects");
         assert_eq!(AgentMethod::ListDataTypes.as_str(), "list_data_types");
+        assert_eq!(AgentMethod::ListXuguTablespaces.as_str(), "list_xugu_tablespaces");
         assert_eq!(AgentMethod::CompletionAssistantSearchV1.as_str(), "completion_assistant_search_v1");
         assert_eq!(AgentMethod::GetObjectSource.as_str(), "get_object_source");
         assert_eq!(AgentMethod::GetColumns.as_str(), "get_columns");
@@ -4915,8 +5117,13 @@ for line in sys.stdin:
         assert_eq!(MongoAgentMethod::InsertDocuments.as_str(), "insert_documents");
         assert_eq!(MongoAgentMethod::UpdateDocument.as_str(), "update_document");
         assert_eq!(MongoAgentMethod::UpdateDocuments.as_str(), "update_documents");
+        assert_eq!(MongoAgentMethod::ReplaceDocument.as_str(), "replace_document");
+        assert_eq!(MongoAgentMethod::BulkWrite.as_str(), "bulk_write");
         assert_eq!(MongoAgentMethod::DeleteDocument.as_str(), "delete_document");
         assert_eq!(MongoAgentMethod::DeleteDocuments.as_str(), "delete_documents");
+        assert_eq!(MongoAgentMethod::StartFindCursor.as_str(), "start_find_cursor");
+        assert_eq!(MongoAgentMethod::FetchFindCursor.as_str(), "fetch_find_cursor");
+        assert_eq!(MongoAgentMethod::CloseFindCursor.as_str(), "close_find_cursor");
     }
 
     #[test]
@@ -4982,6 +5189,9 @@ for line in sys.stdin:
         let _mongo_clone_collection = AgentDriverClient::mongo_clone_collection::<serde_json::Value>;
         let _mongo_drop_database = AgentDriverClient::mongo_drop_database::<serde_json::Value>;
         let _mongo_insert_document = AgentDriverClient::mongo_insert_document::<serde_json::Value>;
+        let _mongo_start_find_cursor = AgentDriverClient::mongo_start_find_cursor::<serde_json::Value>;
+        let _mongo_fetch_find_cursor = AgentDriverClient::mongo_fetch_find_cursor::<serde_json::Value>;
+        let _mongo_close_find_cursor = AgentDriverClient::mongo_close_find_cursor::<serde_json::Value>;
         let _mongo_update_document = AgentDriverClient::mongo_update_document::<serde_json::Value>;
         let _mongo_update_documents = AgentDriverClient::mongo_update_documents::<serde_json::Value>;
         let _mongo_delete_document = AgentDriverClient::mongo_delete_document::<serde_json::Value>;
@@ -4996,7 +5206,11 @@ for line in sys.stdin:
     #[test]
     fn exposes_table_read_protocol_wrappers() {
         let _start_table_read = AgentDriverClient::start_table_read::<serde_json::Value>;
+        let _start_table_read_with_timeout_and_cancel =
+            AgentDriverClient::start_table_read_with_timeout_and_cancel::<serde_json::Value>;
         let _fetch_table_read_page = AgentDriverClient::fetch_table_read_page::<serde_json::Value>;
+        let _fetch_table_read_page_with_timeout_and_cancel =
+            AgentDriverClient::fetch_table_read_page_with_timeout_and_cancel::<serde_json::Value>;
         let _close_table_read_session = AgentDriverClient::close_table_read_session::<serde_json::Value>;
     }
 
@@ -5229,6 +5443,8 @@ for line in sys.stdin:
         assert!(!agent_supports_capability(Some(&handshake), AgentCapability::MongoRunCommand));
         assert!(!agent_supports_capability(None, AgentCapability::MongoInsertDocuments));
         assert!(!agent_supports_capability(Some(&handshake), AgentCapability::MongoInsertDocuments));
+        assert!(!agent_supports_capability(None, AgentCapability::MongoFindCursor));
+        assert!(!agent_supports_capability(Some(&handshake), AgentCapability::MongoFindCursor));
 
         let mongo_handshake =
             AgentHandshake { capabilities: vec![AgentCapability::MongoDropDatabase.as_str().to_string()], ..handshake };
@@ -5254,6 +5470,12 @@ for line in sys.stdin:
             Some(&mongo_insert_documents_handshake),
             AgentCapability::MongoInsertDocuments
         ));
+
+        let mongo_find_cursor_handshake = AgentHandshake {
+            capabilities: vec![AgentCapability::MongoFindCursor.as_str().to_string()],
+            ..mongo_insert_documents_handshake
+        };
+        assert!(agent_supports_capability(Some(&mongo_find_cursor_handshake), AgentCapability::MongoFindCursor));
     }
 
     #[test]

@@ -51,6 +51,7 @@ export const DATABASE_TYPES = [
   "trino",
   "prestosql",
   "hive",
+  "argo",
   "kyuubi",
   "impala",
   "db2",
@@ -75,9 +76,11 @@ export const DATABASE_TYPES = [
   "iotdb",
   "iris",
   "influxdb",
+  "influxdb3",
   "victoriametrics",
   "jdbc",
   "spark",
+  "plugin",
 ] as const;
 
-export type DatabaseType = (typeof DATABASE_TYPES)[number];
+export type DatabaseType = (typeof DATABASE_TYPES)[number] | "plugin";

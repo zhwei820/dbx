@@ -721,6 +721,29 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void readValueUsesStringAccessorForLongVarcharColumns() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod(
+            "readValue",
+            ResultSet.class,
+            ResultSetMetaData.class,
+            int.class,
+            boolean.class
+        );
+        method.setAccessible(true);
+        ResultSet rs = (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, invokedMethod, args) -> switch (invokedMethod.getName()) {
+                case "getString" -> "Cache LONGVARCHAR text";
+                case "getObject" -> throw new AssertionError("LONGVARCHAR must use getString");
+                default -> defaultValue(invokedMethod.getReturnType());
+            }
+        );
+
+        assertEquals("Cache LONGVARCHAR text", method.invoke(null, rs, columnMeta(Types.LONGVARCHAR), 1, false));
+    }
+
+    @Test
     void readValueConvertsGaussDbBooleanBytesWithoutCollapsingMultiBitValues() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod(
             "readValue",
@@ -2167,6 +2190,43 @@ final class DbxJdbcPluginTest {
             assertTrue(selectResponse.has("error"), selectResponse.toString());
             assertEquals(List.of("SELECT name FROM users", "SELECT /*+ adhoc */ name FROM users"), executedSql);
         } finally {
+            DriverManager.deregisterDriver(driver);
+        }
+    }
+
+    @Test
+    void getObjectSourceReturnsHive2ViewDdlFromShowCreateTable() throws Exception {
+        List<String> executedSql = new ArrayList<>();
+        Driver driver = new Hive2ViewDdlDriver(executedSql);
+        DriverManager.registerDriver(driver);
+        String connection = """
+            {
+              "connection_string": "jdbc:hive2://hive2-view-ddl-test:10000/default"
+            }
+            """;
+        try {
+            JsonNode response = request("getObjectSource", """
+                {
+                  "connection": %s,
+                  "database": "ods",
+                  "schema": "",
+                  "name": "active_users",
+                  "object_type": "VIEW"
+                }
+                """.formatted(connection));
+
+            assertFalse(response.has("error"), response.toString());
+            assertEquals(List.of("SHOW CREATE TABLE `ods`.`active_users`"), executedSql);
+            assertEquals(
+                "CREATE VIEW `ods`.`active_users` AS SELECT 1\n",
+                response.path("result").path("source").asText()
+            );
+            assertEquals("VIEW", response.path("result").path("object_type").asText());
+            assertEquals("active_users", response.path("result").path("name").asText());
+        } finally {
+            request("close", """
+                { "connection": %s }
+                """.formatted(connection));
             DriverManager.deregisterDriver(driver);
         }
     }
@@ -4674,6 +4734,99 @@ final class DbxJdbcPluginTest {
         return null;
     }
 
+    private static final class Hive2ViewDdlDriver implements Driver {
+        private final List<String> executedSql;
+
+        private Hive2ViewDdlDriver(List<String> executedSql) {
+            this.executedSql = executedSql;
+        }
+
+        @Override
+        public Connection connect(String url, Properties info) {
+            if (!acceptsURL(url)) {
+                return null;
+            }
+            return (Connection) Proxy.newProxyInstance(
+                DbxJdbcPluginTest.class.getClassLoader(),
+                new Class<?>[] { Connection.class },
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "createStatement" -> hive2ViewDdlStatement(executedSql);
+                    case "isClosed" -> false;
+                    case "close" -> null;
+                    default -> defaultValue(method.getReturnType());
+                }
+            );
+        }
+
+        @Override
+        public boolean acceptsURL(String url) {
+            return url != null && url.startsWith("jdbc:hive2://hive2-view-ddl-test:");
+        }
+
+        @Override
+        public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) {
+            return new DriverPropertyInfo[0];
+        }
+
+        @Override
+        public int getMajorVersion() {
+            return 1;
+        }
+
+        @Override
+        public int getMinorVersion() {
+            return 0;
+        }
+
+        @Override
+        public boolean jdbcCompliant() {
+            return false;
+        }
+
+        @Override
+        public java.util.logging.Logger getParentLogger() {
+            return java.util.logging.Logger.getGlobal();
+        }
+    }
+
+    private static Statement hive2ViewDdlStatement(List<String> executedSql) {
+        return (Statement) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { Statement.class },
+            (proxy, method, args) -> switch (method.getName()) {
+                case "executeQuery" -> {
+                    executedSql.add(String.valueOf(args[0]));
+                    yield hive2ViewDdlResultSet();
+                }
+                case "close" -> null;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+    }
+
+    private static ResultSet hive2ViewDdlResultSet() {
+        final String[] lines = {
+            "CREATE VIEW `ods`.`active_users` AS SELECT 1"
+        };
+        return (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            new java.lang.reflect.InvocationHandler() {
+                private int index = -1;
+
+                @Override
+                public Object invoke(Object proxy, Method method, Object[] args) {
+                    return switch (method.getName()) {
+                        case "next" -> ++index < lines.length;
+                        case "getString" -> lines[index];
+                        case "close" -> null;
+                        default -> defaultValue(method.getReturnType());
+                    };
+                }
+            }
+        );
+    }
+
     private static final class AdhocFailingHiveDriver implements Driver {
         private final List<String> executedSql;
 
@@ -5001,5 +5154,93 @@ final class DbxJdbcPluginTest {
             .put("connection_string", "jdbc:oracle:thin:@//db:1521/ORCL");
         String once = DbxJdbcPlugin.enrichDriverHint(connection, "Unsupported charset: ZHS16GBK");
         assertEquals(once, DbxJdbcPlugin.enrichDriverHint(connection, once));
+    }
+
+    @Test
+    void getObjectSourceBuildsExecutableTableDdlForPlainJdbcDrivers() throws Exception {
+        String sourceDb = "jdbc:h2:mem:dbx_ddl_src;DB_CLOSE_DELAY=-1";
+        try (Statement st = DriverManager.getConnection(sourceDb, "sa", "").createStatement()) {
+            st.execute("CREATE TABLE \"dbx_ddl_parent\"(id BIGINT NOT NULL, CONSTRAINT pk_ddl_parent PRIMARY KEY(id))");
+            st.execute("CREATE TABLE \"dbx_ddl_child\"("
+                + "id BIGINT NOT NULL, name VARCHAR(50) NOT NULL DEFAULT 'x', parent_id BIGINT, "
+                + "CONSTRAINT pk_ddl_child PRIMARY KEY(id), "
+                + "CONSTRAINT fk_ddl_child FOREIGN KEY(parent_id) REFERENCES \"dbx_ddl_parent\"(id))");
+            st.execute("CREATE UNIQUE INDEX \"uq_ddl_child_name\" ON \"dbx_ddl_child\"(name)");
+        }
+
+        JsonNode response = request("getObjectSource", """
+            {
+              "connection": { "connection_string": "%s", "username": "sa", "connect_timeout_secs": 30 },
+              "name": "dbx_ddl_child",
+              "object_type": "TABLE"
+            }
+            """.formatted(sourceDb));
+
+        assertFalse(response.has("error"), response.toString());
+        JsonNode result = response.path("result");
+        assertEquals("TABLE", result.path("object_type").asText());
+        String source = result.path("source").asText();
+        assertTrue(source.startsWith("CREATE TABLE "), source);
+        assertTrue(source.contains("PRIMARY KEY"), source);
+        assertTrue(source.contains("NOT NULL"), source);
+        assertTrue(source.contains("DEFAULT"), source);
+        assertTrue(source.contains("FOREIGN KEY"), source);
+        assertTrue(source.contains("REFERENCES"), source);
+        assertTrue(source.contains("CREATE UNIQUE INDEX"), source);
+
+        // The generated DDL must be executable: rebuild the child table in a
+        // fresh database that only has the parent, then verify the rebuilt
+        // structure matches the original (columns, PK, FK, unique index).
+        String targetUrl = "jdbc:h2:mem:dbx_ddl_tgt;DB_CLOSE_DELAY=-1";
+        try (Statement st = DriverManager.getConnection(targetUrl, "sa", "").createStatement()) {
+            st.execute("CREATE TABLE \"dbx_ddl_parent\"(id BIGINT NOT NULL, CONSTRAINT pk_ddl_parent PRIMARY KEY(id))");
+            for (String statement : source.split(";")) {
+                if (!statement.isBlank()) {
+                    st.execute(statement);
+                }
+            }
+        }
+        try (Statement st = DriverManager.getConnection(targetUrl, "sa", "").createStatement();
+             ResultSet rs = st.executeQuery("""
+                SELECT
+                  (SELECT COUNT(*) FROM information_schema.columns
+                     WHERE table_name = 'dbx_ddl_child') AS column_count,
+                  (SELECT COUNT(*) FROM information_schema.table_constraints
+                     WHERE table_name = 'dbx_ddl_child' AND constraint_type = 'PRIMARY KEY') AS pk_count,
+                  (SELECT COUNT(*) FROM information_schema.table_constraints
+                     WHERE table_name = 'dbx_ddl_child' AND constraint_type = 'FOREIGN KEY') AS fk_count,
+                  (SELECT COUNT(*) FROM information_schema.indexes
+                     WHERE table_name = 'dbx_ddl_child' AND index_name = 'uq_ddl_child_name') AS uq_index_count
+                """)) {
+            assertTrue(rs.next());
+            assertEquals(3, rs.getInt("column_count"));
+            assertEquals(1, rs.getInt("pk_count"));
+            assertEquals(1, rs.getInt("fk_count"));
+            assertEquals(1, rs.getInt("uq_index_count"));
+        }
+
+        request("close", """
+            { "connection": { "connection_string": "%s", "username": "sa" } }
+            """.formatted(sourceDb));
+        request("close", """
+            { "connection": { "connection_string": "%s", "username": "sa" } }
+            """.formatted(targetUrl));
+    }
+
+    @Test
+    void getObjectSourceKeepsUnsupportedObjectTypesOnPlainJdbcDrivers() throws Exception {
+        JsonNode response = request("getObjectSource", """
+            {
+              "connection": %s,
+              "name": "some_view",
+              "object_type": "VIEW"
+            }
+            """.formatted(CONNECTION));
+
+        assertTrue(response.has("error"), response.toString());
+        assertEquals(
+            "Object source is not supported by this JDBC driver",
+            response.path("error").path("message").asText()
+        );
     }
 }

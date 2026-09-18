@@ -15,6 +15,7 @@ fn basic_table_info(name: &str) -> TableInfo {
     TableInfo {
         name: name.to_string(),
         table_type: "BASE TABLE".to_string(),
+        valid: None,
         comment: None,
         parent_schema: None,
         parent_name: None,
@@ -144,6 +145,7 @@ fn generate_schema_sync_sql_output_invariant() {
         diff_type: "added".to_string(),
         object_type: None,
         name: "users".to_string(),
+        target_name: None,
         columns: Some(vec![]),
         indexes: None,
         foreign_keys: None,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use russh::client::{self, AuthResult, Config, Handle, KeyboardInteractiveAuthResponse};
+use russh::client::{self, AuthResult, Config, GexParams, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::{client::AgentClient, AgentIdentity};
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{decode_secret_key, key::PrivateKeyWithHashAlg, PrivateKey};
@@ -48,7 +48,7 @@ const KEYBOARD_INTERACTIVE_PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 /// SSH client handler. Holds a host-key verifier so that
 /// [`client::Handler::check_server_key`] can reject untrusted/changed server
 /// keys *before* any credential is sent.
-struct SshClient {
+pub(crate) struct SshClient {
     host_key_verifier: Arc<HostKeyVerifier>,
     host: String,
     port: u16,
@@ -67,15 +67,18 @@ impl client::Handler for SshClient {
     ) -> Result<bool, Self::Error> {
         // Runs *before any credential authentication*. We first check the
         // known-hosts stores (system + dbx-managed). A trusted key is accepted
-        // immediately; a *changed* key is rejected (MITM hardening); an unknown
-        // key triggers an explicit TOFU prompt so the user can confirm the host
-        // fingerprint before any password/key is sent.
+        // immediately; an unknown key triggers explicit TOFU; a changed key in
+        // the dbx store prompts for replace-or-session-only; a changed key in
+        // ~/.ssh/known_hosts is still a hard reject (dbx never writes that file).
         match self.host_key_verifier.check(&self.host, self.port, server_public_key) {
             Ok(HostKeyState::Trusted) => Ok(true),
-            Ok(HostKeyState::Unknown) => self.prompt_for_host_key(server_public_key).await,
+            Ok(HostKeyState::Unknown) => self.prompt_for_host_key(server_public_key, None).await,
+            Ok(HostKeyState::Changed { previous_fingerprint }) => {
+                self.prompt_for_host_key(server_public_key, Some(previous_fingerprint)).await
+            }
             Err(e) => {
-                // Changed host key => possible MITM. Surface it to the user as a
-                // clear notice (best-effort; never affects the fail-closed below).
+                // Changed host key in ~/.ssh/known_hosts => possible MITM. dbx
+                // never writes that file, so surface a notice and fail closed.
                 let msg = e.to_string();
                 let _ =
                     ssh_prompt::notify_host_key(ssh_prompt::SshHostKeyNoticeKind::Changed, &self.host, self.port, &msg);
@@ -93,10 +96,16 @@ impl SshClient {
     async fn prompt_for_host_key(
         &mut self,
         server_public_key: &russh::keys::ssh_key::PublicKey,
+        previous_fingerprint: Option<String>,
     ) -> Result<bool, russh::Error> {
         let key_type = Some(server_public_key.algorithm().to_string());
         let fingerprint = Some(server_public_key.fingerprint(HashAlg::Sha256).to_string());
-        let request = ssh_prompt::host_key_verify_request(&self.host, self.port, key_type, fingerprint);
+        let replace = previous_fingerprint.is_some();
+        let request = if replace {
+            ssh_prompt::host_key_changed_request(&self.host, self.port, key_type, fingerprint, previous_fingerprint)
+        } else {
+            ssh_prompt::host_key_verify_request(&self.host, self.port, key_type, fingerprint)
+        };
 
         let Some(responder_rx) = ssh_prompt::request_ssh_prompt(request) else {
             log::warn!(
@@ -118,7 +127,12 @@ impl SshClient {
         match answer {
             Ok(Ok(ssh_prompt::SshPromptAnswer::Accept { remember })) => {
                 if remember {
-                    if let Err(e) = self.host_key_verifier.learn(&self.host, self.port, server_public_key) {
+                    let persist = if replace {
+                        self.host_key_verifier.replace(&self.host, self.port, server_public_key)
+                    } else {
+                        self.host_key_verifier.learn(&self.host, self.port, server_public_key)
+                    };
+                    if let Err(e) = persist {
                         // Persistence failure does not by itself abort the
                         // session — the host is simply trusted for this session
                         // only. Still log it AND surface a notice so the UI can
@@ -163,7 +177,20 @@ impl SshClient {
 fn ssh_client_config() -> Config {
     let mut preferred = Preferred::default();
     let mut kex = preferred.kex.into_owned();
-    for algorithm in [kex::ECDH_SHA2_NISTP256, kex::ECDH_SHA2_NISTP384, kex::ECDH_SHA2_NISTP521, kex::DH_G14_SHA1] {
+    // Appended after russh's safe defaults, so a modern server still negotiates
+    // a modern algorithm. The SHA-1 group exchange and fixed-group entries are
+    // the last resort for legacy OpenSSH (< 6.7) and appliance/bastion SSH
+    // daemons whose entire offer is `diffie-hellman-group-exchange-sha1` plus
+    // `diffie-hellman-group1-sha1`; without them the handshake aborts with
+    // "No common Kex algorithm" before authentication is ever attempted.
+    for algorithm in [
+        kex::ECDH_SHA2_NISTP256,
+        kex::ECDH_SHA2_NISTP384,
+        kex::ECDH_SHA2_NISTP521,
+        kex::DH_G14_SHA1,
+        kex::DH_GEX_SHA1,
+        kex::DH_G1_SHA1,
+    ] {
         if !kex.contains(&algorithm) {
             kex.push(algorithm);
         }
@@ -179,7 +206,25 @@ fn ssh_client_config() -> Config {
     }
     preferred.mac = Cow::Owned(mac);
 
-    Config { nodelay: true, keepalive_interval: Some(Duration::from_secs(30)), preferred, ..Default::default() }
+    Config {
+        nodelay: true,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        preferred,
+        gex: legacy_gex_params(),
+        ..Default::default()
+    }
+}
+
+/// Group-exchange bounds for the SHA-1 group exchange fallback above.
+///
+/// russh defaults to a 3072-bit minimum, which legacy daemons that only speak
+/// `diffie-hellman-group-exchange-sha1` cannot satisfy: they reject the request
+/// outright, so enabling the algorithm alone would still fail the handshake.
+/// 2048 bits is russh's own floor for a client config and stays within current
+/// guidance, while the preferred and maximum sizes keep russh's defaults so a
+/// capable server is still driven to the largest group it supports.
+fn legacy_gex_params() -> GexParams {
+    GexParams::for_client_config(2048, 8192, 8192).unwrap_or_default()
 }
 
 fn tofu_prompt_deadline(network_deadline: Instant, prompt_started_at: Instant) -> Option<Instant> {
@@ -316,7 +361,7 @@ async fn authenticate_keyboard_interactive(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn connect_and_authenticate(
+pub(crate) async fn connect_and_authenticate(
     connect_host: &str,
     connect_port: u16,
     host_key_host: &str,
@@ -1278,6 +1323,10 @@ impl TunnelManager {
         Self { tunnels: Mutex::new(HashMap::new()), start_locks: Mutex::new(HashMap::new()), known_hosts_path }
     }
 
+    pub fn known_hosts_path(&self) -> &Path {
+        &self.known_hosts_path
+    }
+
     async fn start_lock(&self, connection_id: &str) -> Arc<Mutex<()>> {
         self.start_locks
             .lock()
@@ -1820,7 +1869,7 @@ async fn bind_tunnel_listener(
     Ok((listener, local_port))
 }
 
-fn effective_hop_timeout(hop: &SshTunnelConfig) -> u64 {
+pub(crate) fn effective_hop_timeout(hop: &SshTunnelConfig) -> u64 {
     if hop.connect_timeout_secs == 0 {
         crate::models::connection::default_ssh_connect_timeout_secs()
     } else {
@@ -1828,11 +1877,13 @@ fn effective_hop_timeout(hop: &SshTunnelConfig) -> u64 {
     }
 }
 
-/// Serializes every test that mutates the process-global SSH prompt gateway so
-/// they cannot clobber each other's gateway (or the MITM fail-closed test,
-/// which relies on *no* gateway being installed). Test-only.
+/// Serializes every test that mutates the process-global prompt gateway. The
+/// lock lives in `db::ssh_prompt` because the gateway is shared with the plugin
+/// Host API, so prompt tests in other modules must take the same lock. Test-only.
 #[cfg(test)]
-static PROMPT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+fn prompt_test_lock() -> &'static tokio::sync::Mutex<()> {
+    crate::db::ssh_prompt::prompt_gateway_test_lock()
+}
 
 #[cfg(test)]
 fn plan_chain(
@@ -1869,10 +1920,10 @@ fn plan_chain(
 
 #[cfg(test)]
 mod tests {
+    use super::prompt_test_lock;
     #[cfg(unix)]
     use super::resolve_ssh_agent_socket_path;
     use super::SshClient;
-    use super::PROMPT_TEST_LOCK;
     use super::{
         bind_tunnel_listener, connect_and_authenticate, describe_terminal_auth_failure, effective_hop_timeout,
         netcat_proxy_command, openssh_padding_len, plan_chain, read_ssh_string,
@@ -2073,6 +2124,39 @@ mod tests {
     }
 
     #[test]
+    fn ssh_client_config_offers_sha1_group_exchange_kex_last() {
+        let config = ssh_client_config();
+        let kex = config.preferred.kex;
+        let position = |needle: russh::kex::Name| kex.iter().position(|algorithm| *algorithm == needle).unwrap();
+
+        // A server advertising only the two SHA-1 exchanges from issue #8722 has
+        // to find a common algorithm, or the handshake fails before auth.
+        let gex_sha1_index = position(russh::kex::DH_GEX_SHA1);
+        let group1_sha1_index = position(russh::kex::DH_G1_SHA1);
+
+        // Both stay behind every safe default, including the SHA-1 fallback that
+        // was already present, so a capable server never downgrades to them.
+        let group14_sha1_index = position(russh::kex::DH_G14_SHA1);
+        let gex_sha256_index = position(russh::kex::DH_GEX_SHA256);
+
+        assert!(gex_sha256_index < group14_sha1_index);
+        assert!(group14_sha1_index < gex_sha1_index);
+        assert!(gex_sha1_index < group1_sha1_index);
+    }
+
+    #[test]
+    fn ssh_client_config_lowers_group_exchange_minimum_for_legacy_servers() {
+        let config = ssh_client_config();
+
+        // russh's 3072-bit default minimum is rejected by the legacy daemons
+        // that need DH_GEX_SHA1 in the first place, which would leave the new
+        // fallback unusable.
+        assert_eq!(config.gex.min_group_size(), 2048);
+        assert_eq!(config.gex.preferred_group_size(), russh::client::GexParams::default().preferred_group_size());
+        assert_eq!(config.gex.max_group_size(), russh::client::GexParams::default().max_group_size());
+    }
+
+    #[test]
     fn ssh_client_config_keeps_legacy_mac_after_safe_defaults() {
         let config = ssh_client_config();
         let mac = config.preferred.mac;
@@ -2240,7 +2324,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_host_key_is_rejected() {
+    fn changed_host_key_is_reported() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         // Pre-seed the store with a *different* (valid) ed25519 key for the host.
@@ -2253,7 +2337,38 @@ mod tests {
 
         // The server actually presents TEST_SERVER_KEY_PEM's key -> mismatch.
         let key = test_server_public_key();
-        assert!(verifier.check("db.example.com", 22, &key).is_err(), "changed host key must be rejected (MITM)");
+        match verifier.check("db.example.com", 22, &key).unwrap() {
+            HostKeyState::Changed { previous_fingerprint } => {
+                assert!(
+                    previous_fingerprint.starts_with("SHA256:"),
+                    "changed key must expose the saved fingerprint, got {previous_fingerprint}"
+                );
+            }
+            other => panic!("changed host key must be reported as Changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replace_updates_changed_host_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::write(
+            &path,
+            "db.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\n",
+        )
+        .unwrap();
+        let verifier = HostKeyVerifier::new(path.clone());
+        let key = test_server_public_key();
+
+        assert!(matches!(verifier.check("db.example.com", 22, &key).unwrap(), HostKeyState::Changed { .. }));
+        verifier.replace("db.example.com", 22, &key).unwrap();
+        assert_eq!(verifier.check("db.example.com", 22, &key).unwrap(), HostKeyState::Trusted);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.contains("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X"),
+            "old key must be removed: {contents}"
+        );
+        assert!(contents.contains("db.example.com"), "new key must be recorded: {contents}");
     }
 
     #[test]
@@ -2291,7 +2406,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_host_prompt_accept_learns_key() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         let dir = tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let verifier = HostKeyVerifier::new(path.clone());
@@ -2315,7 +2430,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_host_prompt_accept_without_remember_is_session_only() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         let dir = tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let verifier = HostKeyVerifier::new(path.clone());
@@ -2341,7 +2456,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_host_prompt_reject_aborts_handshake() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         let dir = tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let verifier = HostKeyVerifier::new(path.clone());
@@ -2367,7 +2482,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_host_without_gateway_fails_closed() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         // Ensure no gateway is installed so request_ssh_prompt returns None.
         ssh_prompt::clear_ssh_prompt_gateway();
         let dir = tempdir().unwrap();
@@ -2388,7 +2503,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_host_skips_prompt() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         let dir = tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let verifier = HostKeyVerifier::new(path);
@@ -2406,6 +2521,94 @@ mod tests {
         };
         let trusted = client.check_server_key(&key).await.unwrap();
         assert!(trusted, "a known-trusted host must be accepted without a prompt");
+    }
+
+    fn seed_changed_host_key(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            "db.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\n",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn changed_host_prompt_update_replaces_key() {
+        let _guard = prompt_test_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        seed_changed_host_key(&path);
+        let verifier = HostKeyVerifier::new(path.clone());
+        let key = test_server_public_key();
+
+        install_fake_prompt_gateway(ssh_prompt::SshPromptAnswer::Accept { remember: true });
+        let mut client = SshClient {
+            host_key_verifier: Arc::new(verifier),
+            host: "db.example.com".to_string(),
+            port: 22,
+            prompt_started_tx: None,
+        };
+
+        let trusted = client.check_server_key(&key).await.unwrap();
+        assert!(trusted, "updating a changed host key should continue the handshake");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.contains("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X"),
+            "old key must be removed: {contents}"
+        );
+        assert!(contents.contains("db.example.com"), "new key should be learned: {contents}");
+        ssh_prompt::clear_ssh_prompt_gateway();
+    }
+
+    #[tokio::test]
+    async fn changed_host_prompt_continue_is_session_only() {
+        let _guard = prompt_test_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        seed_changed_host_key(&path);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let verifier = HostKeyVerifier::new(path.clone());
+        let key = test_server_public_key();
+
+        install_fake_prompt_gateway(ssh_prompt::SshPromptAnswer::Accept { remember: false });
+        let mut client = SshClient {
+            host_key_verifier: Arc::new(verifier),
+            host: "db.example.com".to_string(),
+            port: 22,
+            prompt_started_tx: None,
+        };
+
+        let trusted = client.check_server_key(&key).await.unwrap();
+        assert!(trusted, "continuing without update should trust this session");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "remember=false must leave known_hosts unchanged"
+        );
+        ssh_prompt::clear_ssh_prompt_gateway();
+    }
+
+    #[tokio::test]
+    async fn changed_host_prompt_reject_aborts_handshake() {
+        let _guard = prompt_test_lock().lock().await;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        seed_changed_host_key(&path);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let verifier = HostKeyVerifier::new(path.clone());
+        let key = test_server_public_key();
+
+        install_fake_prompt_gateway(ssh_prompt::SshPromptAnswer::Reject);
+        let mut client = SshClient {
+            host_key_verifier: Arc::new(verifier),
+            host: "db.example.com".to_string(),
+            port: 22,
+            prompt_started_tx: None,
+        };
+
+        let trusted = client.check_server_key(&key).await.unwrap();
+        assert!(!trusted, "rejected changed host key must not be trusted");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "rejected change must not rewrite known_hosts");
+        ssh_prompt::clear_ssh_prompt_gateway();
     }
 
     // --- key+password fallback policy ------------------------------------------
@@ -2534,7 +2737,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn password_auth_continues_with_keyboard_interactive_totp() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let (port, server_task) = start_password_then_totp_server().await;
         let dir = tempdir().unwrap();
@@ -2580,7 +2783,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn public_key_auth_continues_with_keyboard_interactive_totp() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let (port, server_task) = start_password_then_totp_server().await;
         let dir = tempdir().unwrap();
@@ -2700,7 +2903,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn socks5_proxy_forwards_requested_target_over_ssh() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let server_key = decode_secret_key(TEST_SERVER_KEY_PEM, None).expect("decode test server key");
         let server_config = server::Config { keys: vec![server_key], ..Default::default() };
@@ -2851,7 +3054,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn tunnel_falls_back_to_netcat_when_direct_tcpip_is_prohibited() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let server_key = decode_secret_key(TEST_SERVER_KEY_PEM, None).expect("decode test server key");
         let server_config = server::Config { keys: vec![server_key], ..Default::default() };
@@ -2906,7 +3109,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn prohibited_direct_tcpip_does_not_run_netcat_by_default() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let server_key = decode_secret_key(TEST_SERVER_KEY_PEM, None).expect("decode test server key");
         let server_config = server::Config { keys: vec![server_key], ..Default::default() };
@@ -2956,7 +3159,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn forwarded_connection_checks_logical_host_identity() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let (connect_port, server_task) = start_accept_none_server().await;
         let dir = tempdir().unwrap();
@@ -3004,7 +3207,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
     /// wait must not be charged against `connect_timeout_secs`.
     #[tokio::test]
     async fn slow_host_key_acceptance_does_not_time_out_the_connection() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let (connect_port, server_task) = start_accept_none_server().await;
         let dir = tempdir().unwrap();
@@ -3047,7 +3250,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn concurrent_tunnel_starts_share_one_handshake() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
         let (connect_port, server_task) = start_accept_none_server().await;
         let dir = tempdir().unwrap();
@@ -3141,7 +3344,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn unknown_host_without_persist_permission_does_not_leak_password() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         // This test proves the client never sends a password to an untrusted
         // host. It must run with NO prompt gateway installed so the handshake
         // fails closed (no UI to confirm the key -> reject before auth).
@@ -3278,7 +3481,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn reconnect_auth_failure_is_reported_instead_of_a_dead_local_port() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
 
         let publickey_attempts = Arc::new(AtomicUsize::new(0));
@@ -3372,7 +3575,7 @@ uveF/dLmnVN1IriEyEvHAAAACGRieC10ZXN0AQIDBAU=
 
     #[tokio::test]
     async fn rejected_public_key_reports_what_the_server_refused() {
-        let _guard = PROMPT_TEST_LOCK.lock().await;
+        let _guard = prompt_test_lock().lock().await;
         ssh_prompt::clear_ssh_prompt_gateway();
 
         // Every publickey attempt is refused, so this exercises the initial

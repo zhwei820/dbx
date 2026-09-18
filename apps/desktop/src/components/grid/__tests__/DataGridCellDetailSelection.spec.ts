@@ -2,8 +2,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const dataGridSource = readFileSync(new URL("../DataGrid.vue", import.meta.url), "utf8");
+const largeValueSource = readFileSync(new URL("../../../composables/useDataGridLargeValues.ts", import.meta.url), "utf8");
 
 describe("DataGrid cell detail selection", () => {
+  it("selects the first available cell when opening Mongo JSON preview without a selection", () => {
+    const togglePreview = dataGridSource.match(/function toggleMongoJsonPreview[\s\S]*?\n\}/)?.[0];
+    expect(togglePreview).toContain("if (showMongoJsonPreview.value)");
+    expect(togglePreview).toContain("!currentSelectedCellPosition() && displayItems.value.length > 0 && visibleColumnIndexes.value.length > 0");
+    expect(togglePreview).toContain("selectSingleCell(0, 0)");
+  });
+
   it("keeps Canvas hover state while the renderer swaps drawing surfaces", () => {
     expect(dataGridSource).toContain("function isCanvasGridInteractionTarget(target: Node): boolean");
     expect(dataGridSource).toContain("canvasOverlayRef.value?.contains(target) === true");
@@ -27,10 +35,10 @@ describe("DataGrid cell detail selection", () => {
   });
 
   it("removes the Canvas action overlay and reservation only when no action remains", () => {
-    expect(dataGridSource).toContain("if (!cellDetailButtonEnabled.value && !canQuickDownload && !foreignKey) return null;");
-    expect(dataGridSource).toContain("canvasDataGridActionOverlayWidth(canQuickDownload, !!foreignKey, cellDetailButtonEnabled.value)");
-    expect(dataGridSource).toContain("canvasDataGridActionOverlayWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value)");
-    expect(dataGridSource).toContain("canvasDataGridActionReservedWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value)");
+    expect(dataGridSource).toContain("if (!cellDetailButtonEnabled.value && !canQuickDownload && !foreignKey && !externalUrl) return null;");
+    expect(dataGridSource).toContain("canvasDataGridActionOverlayWidth(canQuickDownload, !!foreignKey, cellDetailButtonEnabled.value, !!externalUrl)");
+    expect(dataGridSource).toContain("canvasDataGridActionOverlayWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value, !!cell.externalUrl)");
+    expect(dataGridSource).toContain("canvasDataGridActionReservedWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value, !!cell.externalUrl)");
     expect(dataGridSource).toMatch(/watch\([\s\S]*?cellDetailButtonEnabled,[\s\S]*?scheduleCanvasDraw/);
   });
 
@@ -46,7 +54,8 @@ describe("DataGrid cell detail selection", () => {
   });
 
   it("hydrates bounded large-value previews for every cell detail target", () => {
-    expect(dataGridSource).toMatch(/function hydrateCellDetailTarget[\s\S]*?isLargeValuePreview[\s\S]*?hydrateLargeValueCell/);
+    expect(largeValueSource).toContain("function isLargeValuePreview");
+    expect(dataGridSource).toContain("function hydrateLargeValueCell");
     expect(dataGridSource).toMatch(/showCellDetails[\s\S]*?hydrateCellDetailTarget\(detailCell\.value\)/);
     expect(dataGridSource).toMatch(/openCellDetailDialog[\s\S]*?hydrateCellDetailTarget\(cellDetailDialogTarget\.value\)/);
   });

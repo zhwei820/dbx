@@ -29,6 +29,7 @@ export const showBatchTruncateConfirm = ref(false);
 export const showStructurePreviewDialog = ref(false);
 export const showStructureDocCopyDialog = ref(false);
 export const structurePreviewSql = ref("");
+export const structurePreviewHasOceanBase = ref(false);
 export const structurePreviewTitle = ref("");
 export const structurePreviewDefaultFileName = ref("structure.sql");
 export const structurePreviewError = ref("");
@@ -39,6 +40,9 @@ export const showEmptyTableConfirm = ref(false);
 export const showTruncateTableConfirm = ref(false);
 export const showVacuumTableConfirm = ref(false);
 export const showMysqlAutoIncrementConfirm = ref(false);
+export const showBatchMysqlAutoIncrementConfirm = ref(false);
+export const batchMysqlAutoIncrementTargets = ref<TreeNode[]>([]);
+export const batchMysqlAutoIncrementPreviewSql = ref("");
 export const showRenameObjectDialog = ref(false);
 export const renameObjectName = ref("");
 export const renameObjectError = ref("");
@@ -163,6 +167,10 @@ export function resetMongoIndexManager() {
   mongoIndexManagerMode.value = "view";
   mongoEditIndexOriginalName.value = "";
 }
+export const showClearElasticsearchIndexConfirm = ref(false);
+export const clearElasticsearchIndexLoading = ref(false);
+/** Name typed back by the operator before a wildcard index node may be cleared. */
+export const clearElasticsearchIndexTypedName = ref("");
 export const showFlushRedisDbConfirm = ref(false);
 export const showRedisDatabaseAliasDialog = ref(false);
 export const redisDatabaseAliasInput = ref("");
@@ -177,6 +185,9 @@ export const editDatabaseCharset = ref("utf8mb4");
 export const editDatabaseCollation = ref("utf8mb4_unicode_ci");
 export const editDatabaseCommentText = ref("");
 export const showEditSchemaCommentDialog = ref(false);
+export const showCompileErrorDialog = ref(false);
+export const compileErrorTitle = ref("");
+export const compileErrorMessage = ref("");
 export const schemaCommentText = ref("");
 export const schemaCommentLoading = ref(false);
 export const schemaCommentPreviewSql = ref("");
@@ -201,6 +212,7 @@ const openFlags = [
   showTruncateTableConfirm,
   showVacuumTableConfirm,
   showMysqlAutoIncrementConfirm,
+  showBatchMysqlAutoIncrementConfirm,
   showDropObjectConfirm,
   showRenameObjectDialog,
   showDuplicateDialog,
@@ -217,12 +229,14 @@ const openFlags = [
   showDropAllMongoIndexesConfirm,
   showCreateMongoIndexDialog,
   showMongoIndexManagerDialog,
+  showClearElasticsearchIndexConfirm,
   showFlushRedisDbConfirm,
   showRedisDatabaseAliasDialog,
   showCreateSchemaDialog,
   showDropSchemaConfirm,
   showEditDatabasePropertiesDialog,
   showEditSchemaCommentDialog,
+  showCompileErrorDialog,
   showDeleteGroupConfirm,
   showMoveToNewGroupDialog,
   showReplaceConnectionEndpointDialog,
@@ -230,6 +244,8 @@ const openFlags = [
 
 export function resetSidebarTreeDialogState() {
   for (const flag of openFlags) flag.value = false;
+  compileErrorTitle.value = "";
+  compileErrorMessage.value = "";
   createDatabaseUsers.value = [];
   createDatabaseSelectedUsers.value = [];
   createDatabaseUsersLoading.value = false;
@@ -237,6 +253,8 @@ export function resetSidebarTreeDialogState() {
   createDatabasePreviewSql.value = "";
   createDatabaseAuthorizationResults.value = [];
   createDatabaseAuthorizationApplying.value = false;
+  clearElasticsearchIndexLoading.value = false;
+  clearElasticsearchIndexTypedName.value = "";
   redisDatabaseAliasInput.value = "";
   redisDatabaseAliasSaving.value = false;
   cloneMongoCollectionName.value = "";

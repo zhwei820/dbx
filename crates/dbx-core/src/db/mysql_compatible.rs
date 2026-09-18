@@ -152,6 +152,7 @@ pub async fn list_tables_show_from(pool: &MySqlPool, catalog: &str, database: &s
             Some(TableInfo {
                 name,
                 table_type: if table_type.trim().is_empty() { "TABLE".to_string() } else { table_type },
+                valid: None,
                 comment: None,
                 parent_schema: None,
                 parent_name: None,
@@ -325,6 +326,9 @@ fn table_key_index(name: &str, line: &str, is_unique: bool, is_primary: bool, in
         included_columns: None,
         comment: None,
         key_is_expression: Vec::new(),
+        column_opclasses: vec![],
+        key_options: Vec::new(),
+        constraint_backed: false,
     })
 }
 
@@ -345,6 +349,9 @@ fn secondary_index(line: &str) -> Option<IndexInfo> {
         included_columns: None,
         comment: mysql_quoted_string_argument(after_name, "COMMENT"),
         key_is_expression: Vec::new(),
+        column_opclasses: vec![],
+        key_options: Vec::new(),
+        constraint_backed: false,
     })
 }
 

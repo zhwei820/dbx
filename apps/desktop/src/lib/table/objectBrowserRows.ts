@@ -1,4 +1,5 @@
-import type { MongoCollectionKind, ObjectInfo, TreeNode, TreeNodeType } from "@/types/database";
+import type { MongoCollectionKind, ObjectBrowserFilter, ObjectInfo, TreeNode, TreeNodeType } from "@/types/database";
+export type { ObjectBrowserFilter } from "@/types/database";
 import { pinnedTreeNodeIdentityMatches, type PinnedTreeNodeIdentity } from "@/lib/app/pinnedItems";
 import { toMongoCollectionKind } from "@/lib/sidebar/mongoCollectionMutation";
 import { buildGroupedObjectTreeNodes, buildSimpleObjectTreeNodes, buildTableTreeNodes, compareDatabaseObjectNames, normalizeDatabaseObjectName } from "@/lib/table/tableTree";
@@ -26,7 +27,6 @@ export type ObjectBrowserRow = {
 
 export type ObjectBrowserSortKey = "name" | "type" | "estimatedRows" | "totalBytes" | "created_at" | "updated_at" | "comment";
 export type ObjectBrowserSortDirection = "asc" | "desc";
-export type ObjectBrowserFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "triggers" | "events" | "sequences" | "packages" | "types";
 export type ObjectBrowserFilterCounts = Record<ObjectBrowserFilter, number>;
 
 export type ObjectBrowserPinnedTreeNodeContext = {
@@ -121,6 +121,7 @@ export function objectBrowserRowLegacyPinnedTreeNodeIds(row: ObjectBrowserRow, c
               {
                 name: row.name,
                 table_type: row.type,
+                valid: row.valid,
                 comment: row.comment,
                 parent_schema: row.partitionParentSchema,
                 parent_name: row.partitionParentName,

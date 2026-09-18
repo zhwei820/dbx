@@ -81,6 +81,7 @@ pub async fn list_tables(pool: &mysql_async::Pool, schema: &str) -> Result<Vec<T
         .map(|row| TableInfo {
             name: get_str(row, 0),
             table_type: get_str(row, 1),
+            valid: None,
             comment: None,
             parent_schema: None,
             parent_name: None,
@@ -242,6 +243,9 @@ pub async fn list_indexes(pool: &mysql_async::Pool, schema: &str, table: &str) -
                 included_columns: None,
                 comment: None,
                 key_is_expression: Vec::new(),
+                column_opclasses: vec![],
+                key_options: Vec::new(),
+                constraint_backed: false,
             }
         })
         .collect())

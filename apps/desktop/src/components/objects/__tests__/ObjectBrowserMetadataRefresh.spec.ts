@@ -20,7 +20,7 @@ describe("ObjectBrowser table metadata refresh", () => {
   it("refreshes the object list and the open table-info tab from the toolbar", () => {
     const refresh = functionBody("refresh");
 
-    expect(refresh).toContain("void reload();");
+    expect(refresh).toContain("void reload({ preserveExistingRows: true });");
     expect(refresh).toContain("void refreshActiveTableInfo();");
     expect(source).toContain('@click="refresh"');
   });
@@ -30,7 +30,7 @@ describe("ObjectBrowser table metadata refresh", () => {
 
     expect(refreshTableInfo).toContain('sidePanelMode.value !== "table-info" || !sidePanelRow.value');
     expect(refreshTableInfo).toContain("sidePanelGuard.bump();");
-    expect(refreshTableInfo).toMatch(/tableInfoTab\.value === "ddl"[\s\S]*?tableDdlContent\.value = "";[\s\S]*?await fetchTableDdl\(true\);/);
+    expect(refreshTableInfo).toMatch(/tableInfoTab\.value === "ddl"[\s\S]*?rawTableDdlContent\.value = "";[\s\S]*?await fetchTableDdl\(true\);/);
     expect(refreshTableInfo).toMatch(/tableInfoTab\.value === "columns"[\s\S]*?tableColumns\.value = \[\];[\s\S]*?await fetchTableColumns\(true\);/);
     expect(refreshTableInfo).toMatch(/tableInfoTab\.value === "indexes"[\s\S]*?tableIndexes\.value = \[\];[\s\S]*?await fetchTableIndexes\(true\);/);
     expect(refreshTableInfo).toMatch(/tableInfoTab\.value === "foreignKeys"[\s\S]*?tableForeignKeys\.value = \[\];[\s\S]*?await fetchTableForeignKeys\(true\);/);
@@ -45,6 +45,12 @@ describe("ObjectBrowser table metadata refresh", () => {
       expect(functionBody(name)).toContain("loadObjectMetadataFacet(");
       expect(functionBody(name)).not.toContain(".value.length > 0");
     }
+  });
+
+  it("shares the DDL refresh preference and exposes an explicit refresh action", () => {
+    expect(source).toContain("async function fetchTableDdl(force = settingsStore.editorSettings.refreshDdlOnOpen)");
+    expect(source).toContain('@click="refreshActiveTableInfo"');
+    expect(source).not.toContain("setTableInfoRefreshDdlOnOpen");
   });
 
   it("keeps automatic object reloads free of extra metadata requests", () => {

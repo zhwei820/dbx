@@ -4,6 +4,8 @@ import { createQueryEditorExecutionViewportOwnership, isQueryEditorPositionVisib
 
 const queryEditorSource = readFileSync(new URL("../../../components/editor/QueryEditor.vue", import.meta.url), "utf8");
 const contentAreaSource = readFileSync(new URL("../../../components/layout/ContentArea.vue", import.meta.url), "utf8");
+const editorToolbarSource = readFileSync(new URL("../../../components/layout/EditorToolbar.vue", import.meta.url), "utf8");
+const editorGroupSource = readFileSync(new URL("../../../components/layout/EditorGroup.vue", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../../../App.vue", import.meta.url), "utf8");
 const sqlExecutionSource = readFileSync(new URL("../../../composables/useSqlExecution.ts", import.meta.url), "utf8");
 const queryStoreSource = readFileSync(new URL("../../../stores/queryStore.ts", import.meta.url), "utf8");
@@ -50,6 +52,31 @@ describe("QueryEditor execution routing", () => {
     expect(executeModeBranch).toBeGreaterThan(selectionBranch);
   });
 
+  it("captures the toolbar selection before the click event can change focus", () => {
+    expect(queryEditorSource).toContain("function captureExecutionSnapshot(): SqlExecutionSnapshot | undefined");
+    expect(queryEditorSource).toContain("return sqlExecutionSnapshotFromView(currentView);");
+    expect(contentAreaSource).toContain("function captureQueryEditorExecutionSnapshot()");
+    expect(contentAreaSource).toContain("queryEditorRef.value?.captureExecutionSnapshot();");
+    expect(appSource).toContain("const pendingToolbarExecutionSnapshot = ref<SqlExecutionSnapshot & { tabId?: string }>();");
+    expect(appSource).toContain("contentAreaRef.value?.captureQueryEditorExecutionSnapshot?.(tabId)");
+    expect(appSource).toContain("pendingToolbarExecutionSnapshot.value = snapshot ? { ...snapshot, tabId } : undefined;");
+    expect(appSource).toContain('if (source === "pointer" && snapshot && snapshot.tabId === targetTabId)');
+    expect(appSource).toContain("pendingToolbarExecutionSnapshot.value = undefined;");
+    expect(appSource).toContain("void tryExecute(snapshot, { tabId: targetTabId });");
+    expect(appSource).toContain('@execute="(tabId: string, override?: SqlExecutionOverride) => tryExecute(override, { tabId })"');
+    expect(appSource).toContain("async function resolveActiveExecutableSql(snapshot?: SqlExecutionSnapshot, executionTab?: QueryTab)");
+    expect(appSource).toContain("const connection = connectionStore.getConfig(tab.connectionId) ?? activeConnection.value;");
+    // Per-group toolbars call back into App-owned orchestration via injection.
+    expect(appSource).toContain("provide(EDITOR_TOOLBAR_ACTIONS, {");
+    expect(appSource).toContain("captureExecutionSnapshot: captureActiveEditorExecutionSnapshot,");
+    expect(appSource).toContain("toolbarExecute: requestActiveEditorExecute,");
+    expect(editorGroupSource).toContain('@execute-pointer-down="toolbar.captureExecutionSnapshot(activeTab.id)"');
+    expect(editorGroupSource).toContain('@toolbar-execute="toolbar.toolbarExecute($event, activeTab.id)"');
+    expect(editorToolbarSource).toContain("function onExecutePointerDown(event: MouseEvent)");
+    expect(editorToolbarSource).toContain('emit("toolbarExecute", event.detail > 0 ? "pointer" : "keyboard")');
+    expect(editorToolbarSource).not.toContain('emit("execute", event.detail > 0 ? "pointer" : "keyboard")');
+  });
+
   it("uses the opt-in blank-line fallback and otherwise reports the missing cursor statement", () => {
     expect(queryEditorSource).toContain("executeAllOnBlankLine: settingsStore.editorSettings.executeAllOnBlankLine");
     expect(queryEditorSource).toContain('toast(t("editor.noExecutableStatementAtCursor"), 3000)');
@@ -76,8 +103,11 @@ describe("QueryEditor execution routing", () => {
 
   it("claims gutter viewport ownership only after the matching execution starts", () => {
     expect(appSource).toContain("acceptQueryEditorExecutionViewport(editorViewportRequestId)");
+    expect(appSource).toContain("onExecutionCancelled: (editorViewportRequestId) => contentAreaRef.value?.cancelQueryEditorExecutionViewport(editorViewportRequestId)");
     expect(contentAreaSource).toContain("acceptGutterExecutionViewport(requestId)");
+    expect(contentAreaSource).toContain("cancelGutterExecutionViewport(requestId)");
     expect(sqlExecutionSource).toContain("onExecutionStarted: () => deps.onExecutionStarted?.(options.editorViewportRequestId!)");
+    expect(sqlExecutionSource).toContain("onExecutionCancelled?: (editorViewportRequestId: number) => void;");
     expect(queryStoreSource.indexOf("tab.isExecuting = true")).toBeLessThan(queryStoreSource.indexOf("options?.onExecutionStarted?.()"));
   });
 
@@ -102,10 +132,14 @@ describe("QueryEditor execution routing", () => {
 
   it("routes custom SQL shortcuts through selection-aware execution with dual keymap and DOM handlers", () => {
     expect(queryEditorSource).toContain("function runSqlShortcutAction(");
-    expect(queryEditorSource).toContain("resolveSqlShortcutTemplate(action.sql, selected)");
+    expect(queryEditorSource).toContain('if (queryEditorSelectionLanguage() !== "sql") return false;');
+    expect(queryEditorSource).toContain("buildSqlShortcutExecutionSql(action, selected, props.databaseType)");
     expect(queryEditorSource).toContain("enabledSqlShortcutActions(settingsStore.editorSettings.sqlShortcuts)");
-    expect(queryEditorSource).toContain("isCharacterProducingShortcut(action.shortcut)");
+    expect(queryEditorSource).toContain("uniqueSqlShortcutBindings(sqlShortcutActions)");
+    expect(queryEditorSource).toContain("resolveSqlShortcutForDatabase(settingsStore.editorSettings.sqlShortcuts, shortcut, props.databaseType)");
+    expect(queryEditorSource).toContain("isCharacterProducingShortcut(shortcut)");
     expect(queryEditorSource).toContain("createQueryEditorSqlShortcutDomHandler(");
+    expect(queryEditorSource).toContain("() => props.databaseType");
     expect(queryEditorSource).toContain("shouldBlockExecutionShortcut(event, currentView)");
     expect(queryEditorSource).toContain("if (props.readOnly) return true;");
     expect(queryEditorSource).toContain("settingsStore.editorSettings.sqlShortcuts");
@@ -144,7 +178,7 @@ describe("QueryEditor execution viewport ownership", () => {
     const ownership = createQueryEditorExecutionViewportOwnership();
     const cancelledRequestId = ownership.beginRequest();
 
-    ownership.cancelPendingRequest();
+    expect(ownership.cancelPendingRequest(cancelledRequestId)).toBe(true);
 
     expect(ownership.acceptRequest(cancelledRequestId)).toBe(false);
     expect(ownership.consumeCompletionPreservation()).toBe(false);

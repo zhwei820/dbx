@@ -37,13 +37,17 @@ import {
   Minus,
   X,
   CircleX,
+  Ban,
   RefreshCw,
 } from "@lucide/vue";
+import OracleDatabaseLinksDialog from "@/components/objects/OracleDatabaseLinksDialog.vue";
+const showDatabaseLinks = ref(false);
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
+import PluginIcon from "@/components/plugins/PluginIcon.vue";
 import ConnectionErrorIndicator from "@/components/connection/ConnectionErrorIndicator.vue";
 import ReadOnlySessionControl from "@/components/connection/ReadOnlySessionControl.vue";
 import ProductionContextBadge from "@/components/common/ProductionContextBadge.vue";
@@ -53,21 +57,35 @@ import { Switch } from "@/components/ui/switch";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
 import type { ColumnInfo, ConnectionConfig, CustomTypeTreeMemberMeta, DatabaseType, TreeNode, TriggerInfo } from "@/types/database";
 import { alignedCommentLeadingWidth, canTreeNodePin, canTreeNodeShowExpander, sidebarTreeNodeComment, trailingCommentAvailableWidth, trailingCommentGapPx, treeItemPaddingLeft, treeLabelWidthClass, usesFullWidthTreeLabel } from "@/lib/sidebar/sidebarTreeItemLayout";
-import { clearActiveTableReferencePayload, createTableReferenceDragEndEvent, createTableReferenceDropEvent, createTableReferenceHoverEvent, createTableReferencePayload, setActiveTableReferencePayload, type QueryEditorTableReferencePayload } from "@/lib/editor/queryEditorTableDrop";
+import {
+  clearActiveTableReferencePayload,
+  createColumnReferencePayload,
+  createMultiTableReferencePayload,
+  createTableReferenceDragEndEvent,
+  createTableReferenceDropEvent,
+  createTableReferenceHoverEvent,
+  createTableReferencePayload,
+  setActiveTableReferencePayload,
+  type QueryEditorTableReferencePayload,
+} from "@/lib/editor/queryEditorTableDrop";
 import { AI_ASSISTANT_TABLE_DROP_ROOT_SELECTOR } from "@/lib/ai/aiTableReferenceDrop";
 import { beginTableReferenceDragFeedback, isOverSqlEditorTarget, type TableReferenceDragFeedback } from "@/lib/editor/tableReferenceDragFeedback";
 import { formatSidebarObjectStorage } from "@/lib/sidebar/sidebarDatabaseStorage";
+import { effectiveRedisDatabaseIndex } from "@/lib/redis/redisDatabaseIndex";
 import { dataTabOpenModeFromTreeClick } from "@/lib/sidebar/dataTabOpenPolicy";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { connectionDisplayUrlScheme } from "@/lib/connection/connectionPresentation";
+import { isFocusSearchShortcut } from "@/lib/editor/keyboardShortcuts";
 import { encodeSpannerResourcePath } from "@/lib/connection/spannerResourcePath";
 import { hexToRgba } from "@/lib/common/color";
 import { sidebarDisplayTableName } from "@/lib/sidebar/sidebarTableNameDisplay";
 import { shouldMeasureSidebarLabelOverflow } from "@/lib/sidebar/sidebarLabelTooltip";
-import { filterSidebarModifierSelectionIds, supportsSidebarModifierSelection, treeSelectionRangeIdsByIndex, treeSelectionRangeIds } from "@/lib/sidebar/sidebarTreeSelection";
+import { filterSidebarModifierSelectionIds, selectedTreeNodesInVisibleOrder as orderSelectedTreeNodes, supportsSidebarModifierSelection, treeSelectionRangeIdsByIndex, treeSelectionRangeIds } from "@/lib/sidebar/sidebarTreeSelection";
+import { resolveSidebarColumnDragNames, resolveSidebarTableCopyTargets, type SidebarTableCopyTarget } from "@/lib/sidebar/sidebarTableNameCopy";
 import { applyConnectionMultiSelection, applyTreeNodeSelection, connectionMultiSelectionAfterToggle } from "@/lib/sidebar/sidebarConnectionMultiSelect";
 import { connectionBearingGroupIdsUnder, connectionIdsUnderGroup } from "@/lib/sidebar/sidebarLayout";
 import { isSidebarDatabaseOpenForVisual } from "@/lib/sidebar/sidebarDatabaseOpenState";
+import { isLoginUserSchemaNode } from "@/lib/sidebar/loginUserNode";
 import { sidebarTreeContextKey } from "@/lib/sidebar/sidebarTreeContext";
 import { connectionCanConfigureSidebarVisibleDatabases } from "@/lib/sidebar/sidebarVisibleFilterMenu";
 import { supportsSidebarObjectNameFilter } from "@/lib/sidebar/sidebarObjectNameFilter";
@@ -78,13 +96,16 @@ import { focusSidebarRenameInput } from "@/lib/sidebar/sidebarRenameFocus";
 import { ensureSqlExtension, stripSqlExtension } from "@/lib/savedSql/savedSqlFileName";
 import { savedSqlErrorMessage } from "@/lib/savedSql/savedSqlErrors";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
+import { elasticsearchIndexAliasLabel } from "@/lib/sidebar/elasticsearchIndexActions";
+import { isXuguPublicSynonymTreeNode, isXuguSchedulerJobTreeNode, xuguSchemaDisplayName } from "@/lib/sidebar/xuguPublicSynonyms";
+import { xuguDatafileDetailRows, xuguTablespaceDetailRows } from "@/lib/sidebar/xuguTablespaces";
 // --- Drag and Drop ---
 import { useDragSort } from "@/composables/useDragSort";
 import { sidebarTreeRuntimeKey } from "@/lib/sidebar/sidebarTreeRuntime";
 import { isSidebarDatabaseTreeNode, treeNodePinKey } from "@/lib/app/pinnedItems";
 import { isTreeGroupNodeType } from "@/lib/sidebar/treeNodeGroup";
 import { customTypeCapabilities } from "@/lib/database/databaseObjectCapabilities";
-import { shouldActivateTreeNodeOnSingleClick, shouldOpenObjectBrowserOnSingleClick } from "@/lib/sidebar/treeNodeClick";
+import { shouldActivateTreeNodeOnSingleClick } from "@/lib/sidebar/treeNodeClick";
 
 const { t } = useI18n();
 
@@ -205,6 +226,8 @@ const stopPasteHandlerRegistration = watch(
 
 const activeNode = shallowRef<TreeNode>(props.node);
 
+const isDisabledTrigger = computed(() => activeNode.value.type === "trigger" && (activeNode.value.meta as TriggerInfo | undefined)?.enabled === false);
+
 const showProductionBadge = computed(() => {
   const connectionId = activeNode.value.connectionId;
   const context = productionContextForDatabase(connectionId ? connectionStore.getConfig(connectionId) : undefined, activeNode.value.database);
@@ -227,6 +250,10 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-amber-500" };
     case "database":
       return { icon: Database, colorClass: "text-yellow-500" };
+    case "tablespace":
+      return { icon: Database, colorClass: "text-orange-500" };
+    case "datafile":
+      return { icon: FileCode, colorClass: "text-slate-500" };
     case "linked-server-root":
       return { icon: Network, colorClass: "text-blue-500" };
     case "linked-server":
@@ -235,8 +262,12 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Database, colorClass: "text-yellow-500" };
     case "linked-server-schema":
       return { icon: FolderOpen, colorClass: "text-sky-400" };
-    case "schema":
-      return { icon: FolderOpen, colorClass: "text-sky-400" };
+    case "schema": {
+      const databaseType = node.connectionId ? effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId)) : undefined;
+      if (isXuguPublicSynonymTreeNode(databaseType, node.type, node.schema)) return { icon: Link2, colorClass: "text-sky-500" };
+      if (isXuguSchedulerJobTreeNode(databaseType, node.type, node.schema)) return { icon: CalendarClock, colorClass: "text-primary" };
+      return { icon: FolderOpen, colorClass: "text-amber-500" };
+    }
     case "table":
       return { icon: Table, colorClass: "text-green-500" };
     case "view":
@@ -338,8 +369,12 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Braces, colorClass: "text-amber-500" };
     case "sequence":
       return { icon: ListTree, colorClass: "text-emerald-500" };
+    case "oracle-db-links":
+    case "oracle-db-link":
     case "synonym":
       return { icon: Link2, colorClass: "text-sky-500" };
+    case "job":
+      return { icon: Clock, colorClass: "text-orange-400" };
     case "package":
       return { icon: Package, colorClass: "text-cyan-500" };
     case "package-body":
@@ -366,6 +401,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: ListTree, colorClass: "text-emerald-500" };
     case "group-synonyms":
       return { icon: Link2, colorClass: "text-sky-500" };
+    case "group-jobs":
+      return { icon: Clock, colorClass: "text-orange-400" };
     case "group-packages":
       return { icon: Package, colorClass: "text-cyan-500" };
     case "group-types":
@@ -374,6 +411,10 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-green-400" };
     case "group-extensions":
       return { icon: Package, colorClass: "text-violet-500" };
+    case "group-tablespaces":
+      return { icon: Database, colorClass: "text-orange-500" };
+    case "group-datafiles":
+      return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-slate-500" };
     case "extension":
       return { icon: Package, colorClass: "text-violet-400" };
     case "load-more":
@@ -388,13 +429,20 @@ function isGroupLabel(node: TreeNode): boolean {
 }
 
 function displayLabel(node: TreeNode): string {
+  // Synthetic Xugu scopes are persisted with their reserved protocol value.
+  // Resolve them at render time as well, so an already-cached tree never
+  // exposes that implementation detail after the feature is introduced.
+  if (node.type === "schema" && node.connectionId) {
+    const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId));
+    if (databaseType === "xugu") return xuguSchemaDisplayName(node.schema ?? node.label);
+  }
   if (node.type === "load-more") return t(node.label);
   if (node.type === "object-browser") return t(node.label, { count: node.objectCount ?? 0 });
   // Use the canonical key for persisted trees created before this label was
   // internationalized; those nodes may still contain the old Chinese text.
   if (node.type === "nacos-access-control") return t("nacos.accessControlSidebarLabel");
   if (node.type === "user-admin" || node.type === "dameng-users" || node.type === "dameng-roles" || node.type === "dameng-job-admin" || node.type === "meilisearch-system") return t(node.label);
-  if (node.type === "linked-server-root") return t(node.label);
+  if (node.type === "oracle-db-links" || node.type === "linked-server-root") return t(node.label);
   if (node.type === "saved-sql-root") return t(node.label);
   if (node.type === "mqtt-topic" && node.id.endsWith(":mqtt-topic:__console__")) return t(node.label);
   if (node.label === "tree.defaultDatabase") return t(node.label);
@@ -404,6 +452,8 @@ function displayLabel(node: TreeNode): string {
 function treeNodeSecondaryValue(node: TreeNode): string | undefined {
   if (node.type === "type" && node.customTypeKind) return t(`customType.kinds.${node.customTypeKind}`);
   if (node.type === "type-member") return (node.meta as CustomTypeTreeMemberMeta | undefined)?.displayValue;
+  if (node.type === "datafile") return node.xuguDatafilePath;
+  if (node.type === "elasticsearch-index") return elasticsearchIndexAliasLabel(node);
   return undefined;
 }
 
@@ -441,6 +491,22 @@ function cleanTooltipValue(value: string | number | null | undefined): string {
   return String(value ?? "").trim();
 }
 
+function formatXuguStorageDetailValue(key: string, value: string): string {
+  if (key === "currentSize" || key === "maxSize" || key === "stepSize") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      if (key === "maxSize" && numeric === -1) return t("tree.xuguStorage.unlimited");
+      return `${numeric} MB`;
+    }
+  }
+  if (key === "mediaError") {
+    const normalized = value.toUpperCase();
+    if (["F", "FALSE", "0", "N"].includes(normalized)) return t("tree.xuguStorage.no");
+    if (["T", "TRUE", "1", "Y"].includes(normalized)) return t("tree.xuguStorage.yes");
+  }
+  return value;
+}
+
 function isLocalFileConnection(config: Pick<ConnectionConfig, "db_type" | "port">): boolean {
   return config.db_type === "sqlite" || config.db_type === "duckdb" || config.db_type === "access" || (config.db_type === "h2" && config.port === 0);
 }
@@ -452,6 +518,13 @@ function redactedConnectionString(value: string): string {
 function hostForDisplay(host: string): string {
   if (!host.includes(":") || host.startsWith("[") || host.includes("://") || host.includes(",")) return host;
   return `[${host}]`;
+}
+
+// A Redis database is a numeric index; dirty stored values (e.g. redis-cli flags
+// pasted into the field) resolve to the index the backend actually connects with.
+function tooltipDatabaseValue(config: ConnectionConfig): string {
+  const database = cleanTooltipValue(config.database);
+  return config.db_type === "redis" && database ? effectiveRedisDatabaseIndex(database) : database;
 }
 
 function connectionTooltipUrl(config: ConnectionConfig): string {
@@ -471,7 +544,7 @@ function connectionTooltipUrl(config: ConnectionConfig): string {
   const port = Number(config.port) > 0 ? `:${config.port}` : "";
   const user = cleanTooltipValue(config.username);
   const userInfo = user ? `${encodeURIComponent(user)}@` : "";
-  const database = cleanTooltipValue(config.database);
+  const database = tooltipDatabaseValue(config);
   const encodedDatabase = config.db_type === "spanner" ? encodeSpannerResourcePath(database) : encodeURIComponent(database);
   const path = database ? `/${encodedDatabase}` : "";
   const params = cleanTooltipValue(config.url_params);
@@ -507,7 +580,7 @@ const detailTooltip = computed(() => {
       { label: "URL", value: connectionTooltipUrl(config), multiline: true },
       ...(hostValues.length > 0 ? [{ label: hostLabel, value: hostValues[0], values: hostValues } as DetailTooltipRow] : [{ label: hostLabel, value: hostValue, multiline: isLocalFileConnection(config) } as DetailTooltipRow]),
       { label: "Port", value: Number(config.port) > 0 ? String(config.port) : "" },
-      { label: t("connection.database"), value: cleanTooltipValue(config.database) },
+      { label: t("connection.database"), value: tooltipDatabaseValue(config) },
       { label: t("connection.user"), value: cleanTooltipValue(config.username) },
       { label: t("connection.type"), value: config.driver_label || config.driver_profile || config.db_type },
       { label: t("connection.databaseInfo.productVersion"), value: cleanTooltipValue(config.database_info?.productVersion) },
@@ -534,6 +607,32 @@ const detailTooltip = computed(() => {
     ].filter((row) => row.value);
     return rows.length ? { rows } : null;
   }
+  if (node.type === "tablespace" && node.xuguTablespace && node.connectionId && effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId)) === "xugu") {
+    const rows: DetailTooltipRow[] = xuguTablespaceDetailRows(node.xuguTablespace).map((row) => ({
+      label: t(`tree.xuguStorage.${row.key}`),
+      value: formatXuguStorageDetailValue(row.key, row.value),
+      multiline: row.multiline,
+    }));
+    return rows.length ? { rows } : null;
+  }
+  if (node.type === "datafile" && node.xuguDatafile && node.connectionId && effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId)) === "xugu") {
+    const rows: DetailTooltipRow[] = xuguDatafileDetailRows(node.xuguDatafile).map((row) => ({
+      label: t(`tree.xuguStorage.${row.key}`),
+      value: formatXuguStorageDetailValue(row.key, row.value),
+      multiline: row.multiline,
+    }));
+    return rows.length ? { rows } : null;
+  }
+  if (node.type === "elasticsearch-index") {
+    const aliases = elasticsearchIndexAliasLabel(node);
+    if (!aliases) return null;
+    return {
+      rows: [
+        { label: t("objects.name"), value: visibleLabel(node) },
+        { label: t("tree.elasticsearchAlias"), value: aliases },
+      ],
+    };
+  }
   const comment = node.type === "column" && node.meta && "comment" in node.meta ? (node.meta as ColumnInfo).comment : node.comment;
   if (!comment || (node.type !== "schema" && node.type !== "table" && node.type !== "view" && node.type !== "column")) return null;
   const rows: DetailTooltipRow[] = [
@@ -544,6 +643,7 @@ const detailTooltip = computed(() => {
 });
 
 function isTooltipDisabled(): boolean {
+  if (!settingsStore.editorSettings.sidebarShowTooltips) return true;
   if (detailTooltip.value?.rows.length) return isRenamingGroup.value;
   return isRenamingGroup.value || !labelOverflowing.value;
 }
@@ -738,7 +838,7 @@ const canExpand = computed(() => {
   return canTreeNodeShowExpander({
     type: activeNode.value.type,
     childCount: activeNode.value.children?.length ?? 0,
-    explicitContainer: (activeNode.value.type === "package" && activeNode.value.children !== undefined) || activeNode.value.xuguTypeMembersExpandable === true,
+    explicitContainer: activeNode.value.type === "oracle-db-links" || (activeNode.value.type === "package" && activeNode.value.children !== undefined) || activeNode.value.xuguTypeMembersExpandable === true,
   });
 });
 
@@ -753,6 +853,14 @@ const isNodeDefaultDatabase = computed(
 );
 function isNodeDefaultSchema(): boolean {
   return activeNode.value.type === "schema" && !!activeNode.value.connectionId && !!activeNode.value.schema && connectionStore.isDefaultSchema(activeNode.value.connectionId, activeNode.value.schema);
+}
+
+// #7490: on Oracle-family connections whose schemas are database users, bold the
+// schema node matching the login user so it stands out among many user schemas.
+// Kept as a plain function call (not a computed) so TreeItem stays within the
+// top-level computed budget asserted by sidebarRuntimeDecomposition.
+function isLoginUserNode(): boolean {
+  return isLoginUserSchemaNode(activeNode.value, activeNode.value.connectionId ? connectionStore.getConfig(activeNode.value.connectionId) : undefined);
 }
 
 const trailingComment = computed(() => {
@@ -870,6 +978,13 @@ function connectionIconType(connectionId?: string) {
   return config?.driver_profile || config?.db_type || "postgres";
 }
 
+const pluginConnectionIcon = computed(() => {
+  if (activeNode.value.type !== "connection" || !activeNode.value.connectionId) return undefined;
+  const config = connectionStore.getConfig(activeNode.value.connectionId);
+  if (config?.db_type !== "plugin" || !config.plugin_id) return undefined;
+  return { pluginId: config.plugin_id, contributionId: config.plugin_connection_provider };
+});
+
 const connectionColor = computed(() => {
   const connectionId = activeNode.value.connectionId;
   return connectionId ? connectionStore.getConfig(connectionId)?.color || "" : "";
@@ -938,6 +1053,17 @@ function clearTableSearchQuery() {
   updateTableSearchQuery("");
 }
 
+function onTableSearchControlKeydown(event: KeyboardEvent) {
+  if (isFocusSearchShortcut(event, settingsStore.editorSettings.shortcuts)) {
+    event.preventDefault();
+    const control = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    const input = control?.querySelector<HTMLInputElement>("[data-sidebar-table-search-parent-id]");
+    input?.focus();
+    input?.select();
+  }
+  event.stopPropagation();
+}
+
 // --- Connection Group Management ---
 const isRenamingGroup = ref(false);
 
@@ -988,6 +1114,7 @@ function shouldMeasureLabelOverflow(): boolean {
     hasDetailTooltip: !!detailTooltip.value?.rows.length,
     isRenaming: isRenamingGroup.value || isRenamingSavedSql.value || isRenamingConnection.value,
     usesFullWidthLabel: usesFullWidthLabel.value,
+    tooltipsDisabled: !settingsStore.editorSettings.sidebarShowTooltips,
   });
 }
 
@@ -1147,13 +1274,31 @@ let referenceDragFeedback: TableReferenceDragFeedback | null = null;
 
 let suppressNextTableReferenceClick = false;
 
+function selectedTreeNodesInVisibleOrder(): TreeNode[] {
+  return orderSelectedTreeNodes(visibleTreeNodes(), connectionStore.selectedTreeNodeIds);
+}
+
 function tableReferenceDragLabel(payload: QueryEditorTableReferencePayload): string {
-  if (payload.referenceType === "column" && payload.columnName) return payload.columnName;
+  if (payload.referenceType === "column") {
+    const names = payload.columnNames?.length ? payload.columnNames : payload.columnName ? [payload.columnName] : [];
+    if (names.length <= 3) return names.join(", ");
+    return t("grid.columnDragChipMany", { names: names.slice(0, 2).join(", "), count: names.length });
+  }
+  const tableNames = payload.tableReferences?.map((entry) => entry.tableName) ?? (payload.tableName ? [payload.tableName] : []);
+  if (tableNames.length <= 3) return tableNames.join(", ");
+  if (tableNames.length > 1) return t("grid.columnDragChipMany", { names: tableNames.slice(0, 2).join(", "), count: tableNames.length });
   return payload.tableName || payload.database;
 }
 
 function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
   if (!canDragTableReference.value) return null;
+  const selectedNodes = selectedTreeNodesInVisibleOrder();
+  const tableCopyOptions = {
+    tableNameSeparator: settingsStore.editorSettings.sidebarCopyTableNameSeparator,
+    includeTableSchema: settingsStore.editorSettings.sidebarCopyTableNameIncludeSchema,
+    databaseType: currentDatabaseType(),
+    driverProfile: currentDriverProfile(),
+  };
   if (activeNode.value.type === "database") {
     return createTableReferencePayload({
       connectionId: activeNode.value.connectionId,
@@ -1164,16 +1309,24 @@ function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
     });
   }
   if (activeNode.value.type === "column") {
-    const columnName = columnNameForDrag(activeNode.value);
-    if (!activeNode.value.tableName || !columnName) return null;
-    return createTableReferencePayload({
+    const columnNames = resolveSidebarColumnDragNames(activeNode.value, selectedNodes);
+    if (!activeNode.value.connectionId || activeNode.value.database == null || columnNames.length === 0) return null;
+    return createColumnReferencePayload({
       connectionId: activeNode.value.connectionId,
       database: activeNode.value.database,
       schema: activeNode.value.schema,
-      tableName: activeNode.value.tableName,
-      columnName,
+      columnNames,
       databaseType: currentDatabaseType(),
-      driverProfile: currentDriverProfile(),
+      columnNameSeparator: settingsStore.editorSettings.sidebarCopyTableNameSeparator,
+    });
+  }
+  const tableTargets = resolveSidebarTableCopyTargets(activeNode.value, selectedNodes);
+  if (tableTargets.length > 1) {
+    return createMultiTableReferencePayload({
+      connectionId: activeNode.value.connectionId,
+      database: activeNode.value.database,
+      tableReferences: tableTargets.map((target: SidebarTableCopyTarget) => ({ schema: target.schema, tableName: target.label })),
+      ...tableCopyOptions,
     });
   }
   const payload = createTableReferencePayload({
@@ -1184,13 +1337,11 @@ function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
     databaseType: currentDatabaseType(),
     driverProfile: currentDriverProfile(),
   });
+  if (payload && tableCopyOptions.includeTableSchema) {
+    payload.includeTableSchema = true;
+    payload.tableNameSeparator = tableCopyOptions.tableNameSeparator;
+  }
   return payload;
-}
-
-function columnNameForDrag(node: TreeNode): string {
-  const column = node.meta as Partial<ColumnInfo> | undefined;
-  if (typeof column?.name === "string" && column.name) return column.name;
-  return node.label.replace(/\s+\([^()]*\)$/, "");
 }
 
 function startTableReferenceDrag(payload: QueryEditorTableReferencePayload) {
@@ -1337,19 +1488,28 @@ function onClick(event: MouseEvent) {
   }
   selectSingleTreeNode(props.node);
   rowRef.value?.focus({ preventScroll: true });
-  if (shouldOpenObjectBrowserOnSingleClick(props.node.type, settingsStore.editorSettings.sidebarOpenDatabaseOnSingleClick)) {
-    treeRuntime.handleRowClick(props.node, event.detail);
+  if (!shouldActivateTreeNodeOnSingleClick(props.node.type, settingsStore.editorSettings.sidebarActivation) && props.node.type !== "load-more") return;
+  if (props.node.type === "oracle-db-link") {
+    showDatabaseLinks.value = true;
     return;
   }
-  if (!shouldActivateTreeNodeOnSingleClick(props.node.type, settingsStore.editorSettings.sidebarActivation) && props.node.type !== "load-more") return;
   treeRuntime.handleRowClick(props.node, event.detail);
 }
 
 function onDoubleClick(event: MouseEvent) {
+  if (props.node.type === "oracle-db-link" || props.node.type === "oracle-db-links") {
+    showDatabaseLinks.value = true;
+    return;
+  }
   treeRuntime.handleRowDoubleClick(props.node, event);
 }
 
 function onTreeItemContextMenu(event: MouseEvent) {
+  if (props.node.type === "oracle-db-link" || props.node.type === "oracle-db-links") {
+    event.preventDefault();
+    showDatabaseLinks.value = true;
+    return;
+  }
   if (!connectionStore.selectedTreeNodeIds.includes(props.node.id)) selectSingleTreeNode(props.node);
   else connectionStore.selectedTreeNodeId = props.node.id;
   rowRef.value?.focus({ preventScroll: true });
@@ -1357,12 +1517,17 @@ function onTreeItemContextMenu(event: MouseEvent) {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if ((props.node.type === "oracle-db-link" || props.node.type === "oracle-db-links") && event.key === "Enter") {
+    event.preventDefault();
+    showDatabaseLinks.value = true;
+    return;
+  }
   treeRuntime.handleRowKeydown(props.node, event);
 }
 </script>
 
 <template>
-  <div v-if="node.type === 'table-search-control'" class="tree-table-search-control flex h-7 items-center gap-1.5 py-0.5 pr-2" :style="tableSearchStyle" @click.stop @dblclick.stop @mousedown.stop @keydown.stop>
+  <div v-if="node.type === 'table-search-control'" data-sidebar-table-search-control class="tree-table-search-control flex h-7 items-center gap-1.5 py-0.5 pr-2" :style="tableSearchStyle" @click.stop @dblclick.stop @mousedown.stop @keydown="onTableSearchControlKeydown">
     <div class="relative min-w-0 flex-1">
       <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
       <Input
@@ -1406,13 +1571,13 @@ function onKeydown(event: KeyboardEvent) {
             'tree-item-connection-tint': connectionColor,
             'hover:bg-accent': node.type !== 'connection',
             'hover:bg-sidebar-accent': node.type === 'connection',
-            rounded: !selectionVisual.rowSelected,
             'tree-item-active': selectionVisual.rowSelected,
             'tree-item-active--selection-set': selectionVisual.usesSelectionSetHighlight && selectionVisual.rowSelected,
             'tree-item-highlight': highlighted,
           },
         ]"
         :tabindex="selectionVisual.selected || selectionVisual.multiSelected ? 0 : -1"
+        :data-node-id="node.id"
         :style="rowStyle"
         @click="onClick"
         @dblclick="onDoubleClick"
@@ -1435,11 +1600,23 @@ function onKeydown(event: KeyboardEvent) {
           </button>
         </template>
         <span v-else class="w-3.5 h-3.5 shrink-0" />
-        <span class="relative flex h-3.5 w-3.5 shrink-0" :class="{ 'overflow-visible': node.valid === false }">
-          <DatabaseIcon v-if="node.type === 'connection'" :db-type="connectionIconType(node.connectionId)" class="h-3.5 w-3.5 shrink-0" />
+        <span class="relative flex h-3.5 w-3.5 shrink-0" :class="{ 'overflow-visible': node.valid === false || isDisabledTrigger }">
+          <PluginIcon v-if="node.type === 'connection' && pluginConnectionIcon" :plugin-id="pluginConnectionIcon.pluginId" :contribution-id="pluginConnectionIcon.contributionId" class="h-3.5 w-3.5 shrink-0" />
+          <DatabaseIcon v-else-if="node.type === 'connection'" :db-type="connectionIconType(node.connectionId)" class="h-3.5 w-3.5 shrink-0" />
           <Loader2 v-else-if="node.type === 'load-more' && node.isLoading" class="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
           <component v-else :is="getIconInfo(node)?.icon || Database" class="h-3.5 w-3.5 shrink-0" :class="databaseOpenVisual.iconClass" />
           <CircleX v-if="node.valid === false" data-invalid-object-indicator="true" class="pointer-events-none absolute -right-1 -bottom-1 h-2.5 w-2.5 rounded-full bg-background text-destructive stroke-[3]" aria-hidden="true" />
+          <span
+            v-if="isDisabledTrigger"
+            data-disabled-trigger-indicator="true"
+            class="absolute -bottom-1 h-2.5 w-2.5 rounded-full bg-background text-muted-foreground"
+            :class="node.valid === false ? '-left-1' : '-right-1'"
+            role="img"
+            :aria-label="t('objects.disabled')"
+            :title="t('objects.disabled')"
+          >
+            <Ban class="h-2.5 w-2.5 stroke-[3]" aria-hidden="true" />
+          </span>
         </span>
         <div ref="trailingCommentLayoutRef" :class="hasTrailingMetadata() ? 'flex flex-1 min-w-0 items-center' : 'contents'">
           <div ref="trailingCommentLeadingRef" :class="trailingComment ? 'flex max-w-full min-w-0 shrink-0 items-center gap-2' : formattedObjectStorage() ? 'flex min-w-0 flex-1 items-center gap-2' : 'contents'" :style="alignedCommentLeadingStyle()">
@@ -1453,8 +1630,27 @@ function onKeydown(event: KeyboardEvent) {
               @keydown.escape.prevent="cancelRename"
               @click.stop
             />
-            <span v-else ref="labelRef" :class="[labelWidthClass, { 'flex-1': node.type === 'connection' && !trailingComment }]">{{ visibleLabel(node) }}</span>
-            <span v-if="treeNodeSecondaryValue(node)" class="min-w-0 max-w-[55%] shrink truncate text-xs text-muted-foreground" :title="treeNodeSecondaryValue(node)">{{ treeNodeSecondaryValue(node) }}</span>
+            <span
+              v-else
+              ref="labelRef"
+              :class="[
+                labelWidthClass,
+                {
+                  'flex-1': node.type === 'connection' && !trailingComment,
+                  'tree-connection-label': node.type === 'connection' || node.type === 'connection-group',
+                  'tree-object-label': node.type !== 'connection' && node.type !== 'connection-group',
+                  'font-semibold': isLoginUserNode(),
+                },
+              ]"
+              >{{ visibleLabel(node) }}</span
+            >
+            <button v-if="node.type === 'oracle-db-links'" class="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted" :aria-label="t('databaseLinks.manage')" :title="t('databaseLinks.manage')" @click.stop="showDatabaseLinks = true" @dblclick.stop>
+              <TableProperties class="h-3.5 w-3.5" />
+            </button>
+            <span v-if="treeNodeSecondaryValue(node)" class="flex min-w-0 max-w-[55%] shrink items-center gap-1 text-xs text-muted-foreground" :title="node.type === 'elasticsearch-index' ? undefined : treeNodeSecondaryValue(node)">
+              <Link2 v-if="node.type === 'elasticsearch-index'" class="h-3 w-3 shrink-0 text-sky-400" />
+              <span class="min-w-0 truncate">{{ treeNodeSecondaryValue(node) }}</span>
+            </span>
             <button
               v-if="canDragPinnedOrder()"
               type="button"
@@ -1477,10 +1673,17 @@ function onKeydown(event: KeyboardEvent) {
                   node.type === 'group-materialized-views' ||
                   node.type === 'group-procedures' ||
                   node.type === 'group-functions' ||
+                  node.type === 'group-columns' ||
+                  node.type === 'group-indexes' ||
+                  node.type === 'group-fkeys' ||
                   node.type === 'group-triggers' ||
                   node.type === 'group-events' ||
+                  node.type === 'group-constraints' ||
+                  node.type === 'group-table-partitions' ||
+                  node.type === 'group-table-subpartitions' ||
                   node.type === 'group-sequences' ||
                   node.type === 'group-synonyms' ||
+                  node.type === 'group-jobs' ||
                   node.type === 'group-packages' ||
                   node.type === 'group-types' ||
                   node.type === 'group-partitions' ||
@@ -1583,6 +1786,15 @@ function onKeydown(event: KeyboardEvent) {
       </template>
     </LightTooltip>
   </div>
+  <OracleDatabaseLinksDialog
+    v-if="showDatabaseLinks && node.connectionId"
+    v-model:open="showDatabaseLinks"
+    :connection-id="node.connectionId"
+    :database="node.database || ''"
+    :name="node.type === 'oracle-db-link' ? node.label : undefined"
+    :owner="node.schema"
+    @changed="connectionStore.refreshOracleDatabaseLinks(node.connectionId)"
+  />
 </template>
 
 <style>
@@ -1609,6 +1821,21 @@ function onKeydown(event: KeyboardEvent) {
   opacity: 1;
 }
 
+.tree-connection-label {
+  font-weight: 400;
+  font-variation-settings: "wght" 480;
+}
+
+.tree-object-label {
+  font-weight: 400;
+  font-variation-settings: "wght" 430;
+}
+
+.tree-object-label.font-semibold {
+  font-weight: 600;
+  font-variation-settings: "wght" 600;
+}
+
 .tree-item-connection-tint {
   isolation: isolate;
   background-color: transparent !important;
@@ -1617,7 +1844,17 @@ function onKeydown(event: KeyboardEvent) {
 .tree-item-connection-tint::before {
   content: "";
   position: absolute;
-  inset: 0 -9999px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* Bleed the tint to the sidebar scroller's own width (see container-type on
+     .connection-tree-scroller) rather than an unbounded -9999px, which used
+     to inflate the scroller's scrollWidth once sidebarAllowHorizontalScroll
+     turned on overflow-x (issue #8061). max() keeps the tint on rows wider
+     than the scroller; the plain % line is the fallback for engines that
+     drop cqw units. */
+  width: 100%;
+  width: max(100%, 100cqw);
   z-index: 0;
   background-color: var(--tree-connection-row-bg);
   border-radius: inherit;
@@ -1644,7 +1881,7 @@ function onKeydown(event: KeyboardEvent) {
   position: sticky;
   top: 0;
   z-index: 2;
-  background-color: var(--background);
+  background-color: var(--sidebar);
 }
 
 .tree-item-connection-tint:hover::before {
@@ -1672,7 +1909,13 @@ function onKeydown(event: KeyboardEvent) {
 .tree-table-search-control::before {
   content: "";
   position: absolute;
-  inset: 0 -9999px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* See .tree-item-connection-tint::before above: bound to the scroller's
+     own width instead of -9999px so this can't inflate scrollWidth. */
+  width: 100%;
+  width: max(100%, 100cqw);
   z-index: 0;
   background-color: var(--tree-table-search-row-bg);
   pointer-events: none;

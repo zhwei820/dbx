@@ -5,18 +5,23 @@ import { buildGetDatabaseCommentSql } from "@/lib/database/dbAdminSql";
 import {
   defaultAutoCommitForDbType,
   isSchemaAware,
+  supportsConnectionQueryActions,
   supportsConnectionScopedQueryExecution,
   supportsConnectionDatabaseBrowser,
   supportsDatabaseNameCompletion,
   supportsDatabaseSchemaQualifier,
+  supportsDatabaseSearch,
   supportsObjectBrowser,
   supportsObjectBrowserTreeNode,
+  supportsQueryExecution,
   supportsQueryTargetDatabaseListing,
   supportsQueryEditorBlockComments,
   supportsSqlInListPaste,
   supportsTableImport,
   supportsTableVacuum,
   supportsTransaction,
+  usesOracleStickyTransactionState,
+  usesProvenReadOnlyStickyTransactionState,
   usesConnectionOnlyQueryTarget,
   usesTreeSchemaMode,
   schemaNodeHasLoadableName,
@@ -54,6 +59,17 @@ describe("connection database browser", () => {
     expect(supportsConnectionDatabaseBrowser("redis")).toBe(false);
     expect(supportsConnectionDatabaseBrowser("mongodb")).toBe(false);
   });
+
+  it("hides the browse-databases entry for message brokers", () => {
+    // Kafka/Pulsar/RocketMQ/RabbitMQ/NATS all share db_type "mq" and differ only by
+    // driver_profile, so one exclusion covers every broker. They keep the
+    // objectBrowser capability for the tenant/topic tree, but have no database
+    // namespace, so the connection-level browser tab rendered an empty
+    // "no databases found" state (issue #8515). MQTT never had the entry.
+    expect(supportsObjectBrowser("mq")).toBe(true);
+    expect(supportsConnectionDatabaseBrowser("mq")).toBe(false);
+    expect(supportsConnectionDatabaseBrowser("mqtt")).toBe(false);
+  });
 });
 
 describe("object browser tree nodes", () => {
@@ -81,6 +97,47 @@ describe("connection-scoped query targets", () => {
   });
 });
 
+describe("connection query actions", () => {
+  it("keeps SQL query surfaces available for ordinary databases", () => {
+    expect(supportsConnectionQueryActions("mysql")).toBe(true);
+    expect(supportsConnectionQueryActions("postgres")).toBe(true);
+    expect(supportsConnectionQueryActions("redis")).toBe(true);
+    expect(supportsConnectionQueryActions(undefined)).toBe(true);
+  });
+
+  it("hides the sidebar new-query entry for specialized surfaces without a query engine", () => {
+    expect(supportsConnectionQueryActions("nacos")).toBe(false);
+    expect(supportsConnectionQueryActions("consul")).toBe(false);
+    expect(supportsConnectionQueryActions("hbase")).toBe(false);
+    expect(supportsConnectionQueryActions("zookeeper")).toBe(false);
+  });
+
+  it("hides the sidebar new-query entry for message brokers", () => {
+    // Kafka/Pulsar/RocketMQ/RabbitMQ all share db_type "mq" and have no SQL
+    // engine: the sidebar entry opened a plain SQL editor against a broker
+    // (issue #8415). MQTT has the same console-only surface.
+    expect(supportsConnectionQueryActions("mq")).toBe(false);
+    expect(supportsConnectionQueryActions("mqtt")).toBe(false);
+  });
+});
+
+describe("message queue query capabilities", () => {
+  it("does not advertise query execution for broker surfaces", () => {
+    expect(supportsQueryExecution("mq")).toBe(false);
+    expect(supportsQueryExecution("mqtt")).toBe(false);
+  });
+});
+
+describe("zookeeper query capabilities", () => {
+  it("does not advertise query execution or schema search for the kv-only agent", () => {
+    // The ZooKeeper agent exposes only kv_* operations: no list-databases or
+    // query method exists, so the manifest must not claim either capability
+    // (issue #8215: "new query" errored calling list-databases).
+    expect(supportsQueryExecution("zookeeper")).toBe(false);
+    expect(supportsDatabaseSearch("zookeeper")).toBe(false);
+  });
+});
+
 describe("database and schema qualifiers", () => {
   it.each(["sqlserver", "trino", "prestosql"] as const)("supports three-part object names for %s", (databaseType) => {
     expect(supportsDatabaseSchemaQualifier(databaseType)).toBe(true);
@@ -105,10 +162,11 @@ describe("supportsTransaction", () => {
     expect(supportsTransaction("mysql")).toBe(true);
     expect(supportsTransaction("oracle")).toBe(true);
     expect(supportsTransaction("jdbc")).toBe(true);
+    expect(supportsTransaction("oceanbase-oracle")).toBe(true);
+    expect(supportsTransaction("dameng")).toBe(true);
   });
 
   it("returns false for unsupported database types", () => {
-    expect(supportsTransaction("oceanbase-oracle")).toBe(false);
     expect(supportsTransaction("redis")).toBe(false);
     expect(supportsTransaction("mongodb")).toBe(false);
     expect(supportsTransaction("duckdb")).toBe(false);
@@ -118,7 +176,6 @@ describe("supportsTransaction", () => {
     expect(supportsTransaction("sqlite")).toBe(false);
     expect(supportsTransaction("clickhouse")).toBe(false);
     expect(supportsTransaction("sqlserver")).toBe(false);
-    expect(supportsTransaction("dameng")).toBe(false);
     expect(supportsTransaction("rqlite")).toBe(false);
     expect(supportsTransaction("agent")).toBe(false);
   });
@@ -143,6 +200,8 @@ describe("defaultAutoCommitForDbType", () => {
     expect(defaultAutoCommitForDbType("postgres", "manual")).toBe(false);
     expect(defaultAutoCommitForDbType("oracle", "manual")).toBe(false);
     expect(defaultAutoCommitForDbType("jdbc", "manual")).toBe(false);
+    expect(defaultAutoCommitForDbType("oceanbase-oracle", "manual")).toBe(false);
+    expect(defaultAutoCommitForDbType("dameng", "manual")).toBe(false);
     expect(defaultAutoCommitForDbType("mysql", "auto")).toBe(true);
     expect(defaultAutoCommitForDbType(undefined, "auto")).toBe(true);
   });
@@ -151,10 +210,47 @@ describe("defaultAutoCommitForDbType", () => {
     expect(defaultAutoCommitForDbType("redis", "manual")).toBe(true);
     expect(defaultAutoCommitForDbType("mongodb", "manual")).toBe(true);
     expect(defaultAutoCommitForDbType("sqlite", "manual")).toBe(true);
-    expect(defaultAutoCommitForDbType("dameng", "manual")).toBe(true);
     expect(defaultAutoCommitForDbType("clickhouse", "manual")).toBe(true);
-    expect(defaultAutoCommitForDbType("oceanbase-oracle", "manual")).toBe(true);
     expect(defaultAutoCommitForDbType(undefined, "manual")).toBe(true);
+  });
+});
+
+describe("usesOracleStickyTransactionState", () => {
+  it("marks only the Oracle family for schema-change compensation", () => {
+    expect(usesOracleStickyTransactionState("oracle")).toBe(true);
+    expect(usesOracleStickyTransactionState("oceanbase-oracle")).toBe(true);
+  });
+
+  it("keeps other databases on the generic transaction path", () => {
+    expect(usesOracleStickyTransactionState("mysql")).toBe(false);
+    expect(usesOracleStickyTransactionState("postgres")).toBe(false);
+    expect(usesOracleStickyTransactionState("jdbc")).toBe(false);
+    expect(usesOracleStickyTransactionState(undefined)).toBe(false);
+  });
+});
+
+describe("usesProvenReadOnlyStickyTransactionState", () => {
+  it("enables the sticky toolbar for the Oracle family, MySQL and PostgreSQL", () => {
+    expect(usesProvenReadOnlyStickyTransactionState("oracle")).toBe(true);
+    expect(usesProvenReadOnlyStickyTransactionState("oceanbase-oracle")).toBe(true);
+    expect(usesProvenReadOnlyStickyTransactionState("mysql")).toBe(true);
+    expect(usesProvenReadOnlyStickyTransactionState("postgres")).toBe(true);
+  });
+
+  it("keeps databases without manual-transaction support on the legacy toolbar", () => {
+    expect(usesProvenReadOnlyStickyTransactionState("doris")).toBe(false);
+    expect(usesProvenReadOnlyStickyTransactionState("kingbase")).toBe(false);
+    expect(usesProvenReadOnlyStickyTransactionState("jdbc")).toBe(false);
+    expect(usesProvenReadOnlyStickyTransactionState("redis")).toBe(false);
+    expect(usesProvenReadOnlyStickyTransactionState(undefined)).toBe(false);
+  });
+
+  it("only enables sticky state where manual mode is reachable", () => {
+    // The sticky UX gates commit/rollback in manual mode; a member without
+    // transaction support could never reach it. Guards against drift.
+    for (const dbType of ["oracle", "oceanbase-oracle", "mysql", "postgres"]) {
+      expect(supportsTransaction(dbType)).toBe(true);
+    }
   });
 });
 

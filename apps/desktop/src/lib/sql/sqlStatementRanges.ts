@@ -32,6 +32,22 @@ export function supportsExecutionTargetPicker(databaseType?: DatabaseType): bool
   return !!databaseType && (databaseType === "redis" || isHttpJsonRestDatabaseType(databaseType) || !NON_SQL_EXECUTION_TARGET_TYPES.has(databaseType));
 }
 
+/** Remove the MySQL CLI's trailing vertical-output command before execution. */
+export function stripMysqlClientDisplayCommand(sql: string): string {
+  const trimmed = sql.trimEnd();
+  const hasTrailingSemicolon = trimmed.endsWith(";");
+  const withoutTrailingSemicolon = hasTrailingSemicolon ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  if (!withoutTrailingSemicolon.endsWith("\\G") && !withoutTrailingSemicolon.endsWith("\\g")) return sql;
+
+  const markerStart = withoutTrailingSemicolon.length - 2;
+  const lineStart = withoutTrailingSemicolon.lastIndexOf("\n", markerStart - 1) + 1;
+  const linePrefix = withoutTrailingSemicolon.slice(lineStart, markerStart);
+  if (linePrefix.includes("--") || linePrefix.includes("#")) return sql;
+
+  const executableSql = withoutTrailingSemicolon.slice(0, markerStart).trimEnd();
+  return `${executableSql}${hasTrailingSemicolon ? ";" : ""}${sql.slice(trimmed.length)}`;
+}
+
 export function hasMultipleExecutionTargets(sql: string, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): boolean {
   if (databaseType === "redis") {
     return redisExecutableCommandCount(sql) > 1;
@@ -196,6 +212,10 @@ function splitElasticsearchRestRequestRanges(sql: string): RawStatement[] | unde
 
 type QuoteState = "none" | "single" | "double" | "backtick" | "bracket" | "dollar";
 
+function usesBracketIdentifierQuotes(databaseType?: DatabaseType): boolean {
+  return databaseType !== "doris" && databaseType !== "starrocks";
+}
+
 const COMMON_SOFT_STATEMENT_START_KEYWORDS = [
   "SELECT",
   "WITH",
@@ -261,13 +281,27 @@ const DATABASE_SOFT_STATEMENT_KEYWORDS: Partial<Record<DatabaseType, readonly st
 const WITH_MAIN_STATEMENT_KEYWORDS = new Set(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"]);
 const EXPLAIN_STATEMENT_KEYWORDS = new Set(["SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP"]);
 const CREATE_BODY_KEYWORDS = new Set(["SELECT", "WITH", "BEGIN", "DECLARE"]);
+const STARROCKS_CREATE_MATERIALIZED_VIEW_REFRESH_MODIFIERS = new Set(["ASYNC", "MANUAL", "SCHEDULE", "DEFERRED", "IMMEDIATE"]);
 const INSERT_BODY_KEYWORDS = new Set(["SELECT", "WITH"]);
 const ALTER_BODY_KEYWORDS = new Set(["ADD", "ALTER", "COMMENT", "DROP", "MODIFY", "RENAME", "SET"]);
 const CLICKHOUSE_ALTER_TABLE_HEADER = /^ALTER\s+TABLE\s+(?:(?:[A-Za-z_][\w$]*|`(?:``|[^`])+`|"(?:""|[^"])+")\s*\.\s*)?(?:[A-Za-z_][\w$]*|`(?:``|[^`])+`|"(?:""|[^"])+")(?:\s+ON\s+CLUSTER\s+(?:[A-Za-z_][\w$]*|`(?:``|[^`])+`|"(?:""|[^"])+"|'(?:''|[^'])+'))?\s*$/i;
 const SET_OPERATION_KEYWORDS = new Set(["UNION", "INTERSECT", "EXCEPT", "MINUS"]);
 const SET_OPERATION_MODIFIER_KEYWORDS = new Set(["ALL", "DISTINCT"]);
-const ORACLE_LIKE_PL_SQL_DATABASES: ReadonlySet<DatabaseType> = new Set(["oracle", "dameng", "gaussdb", "yashandb", "oscar", "oceanbase-oracle", "xugu"]);
+// Mirrors the backend list in dbx-core/src/sql.rs is_oracle_like_database — keep both
+// in sync. ArgoDB (Transwarp Hive/Inceptor fork) ships a PL/SQL-compatible procedure
+// language (`CREATE [OR REPLACE] PROCEDURE ... IS BEGIN ... END;`), so its statement
+// ranges must stay whole instead of splitting at every body semicolon.
+const ORACLE_LIKE_PL_SQL_DATABASES: ReadonlySet<DatabaseType> = new Set(["oracle", "dameng", "gaussdb", "yashandb", "oscar", "oceanbase-oracle", "xugu", "argo"]);
 const MYSQL_ROUTINE_BLOCK_DATABASES: ReadonlySet<DatabaseType> = new Set(["mysql", "doris", "starrocks", "manticoresearch", "goldendb"]);
+// Backslash escaping inside '...'/"..." strings is a MySQL-family extension; in standard SQL '\'
+// is a complete one-char string and quotes are escaped by doubling (''). Treating backslash as an
+// escape unconditionally makes ESCAPE '\' swallow its closing quote and the following statement
+// boundary, so the next statement loses its run button (#8189). Gate it by dialect, matching the
+// tokenizer/completion side.
+export const BACKSLASH_ESCAPE_STRING_DIALECTS: ReadonlySet<DatabaseType> = new Set(["mysql", "doris", "starrocks", "hive", "argo", "impala", "spark", "databend"]);
+function allowsBackslashStringEscape(databaseType?: DatabaseType): boolean {
+  return !!databaseType && BACKSLASH_ESCAPE_STRING_DIALECTS.has(databaseType);
+}
 const MYSQL_CREATE_TABLE_OPTION_DATABASES: ReadonlySet<DatabaseType> = new Set(["mysql", "doris", "starrocks", "manticoresearch", "goldendb", "gbase"]);
 const MYSQL_ROUTINE_OBJECT_TYPES = new Set(["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]);
 const MYSQL_NON_ROUTINE_CREATE_TYPES = new Set(["DATABASE", "INDEX", "LOGFILE", "ROLE", "SCHEMA", "SERVER", "SPATIAL", "TABLE", "TEMPORARY", "UNIQUE", "USER", "VIEW"]);
@@ -298,6 +332,7 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
   const statements: RawStatement[] = [];
   const len = sql.length;
   const supportsDelimiterCommands = databaseType === "mysql";
+  const backslashEscapes = allowsBackslashStringEscape(databaseType);
 
   let statementStart = -1;
   let statementEnd = -1;
@@ -414,8 +449,10 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
 
     if (state === "single") {
       markContent(i);
-      // Backslash escapes the next char (e.g. PostgreSQL standard_conforming_strings=off style).
-      if (ch === "\\" && next) {
+      // Only MySQL-family dialects treat backslash as an escape inside '...' (see
+      // BACKSLASH_ESCAPE_STRING_DIALECTS); in standard SQL '\' is a literal char and must not
+      // consume the next char, otherwise the closing quote is swallowed (#8189).
+      if (ch === "\\" && next && backslashEscapes) {
         i += 2;
         continue;
       }
@@ -478,7 +515,7 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
         continue;
       }
     }
-    if (isOracleLikeDatabase(databaseType) && isAtLineStart(sql, i) && isSlashLine(sql, i)) {
+    if (isOracleLikeDatabase(databaseType, parameterOptions) && isAtLineStart(sql, i) && isSlashLine(sql, i)) {
       const lineEnd = findLineEnd(sql, i);
       flush(i);
       i = nextLineStart(sql, lineEnd);
@@ -547,7 +584,7 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
       i += 1;
       continue;
     }
-    if (ch === "[") {
+    if (ch === "[" && usesBracketIdentifierQuotes(databaseType)) {
       markContent(i);
       state = "bracket";
       i += 1;
@@ -558,7 +595,7 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
       const tagMatch = /^\$[A-Za-z_0-9]*\$/.exec(sql.slice(i));
       if (tagMatch) {
         markContent(i);
-        if (databaseType === "gaussdb" && statementStart !== -1 && startsWithPostgresDollarQuotedRoutinePrefix(sql.slice(statementStart, i))) {
+        if ((databaseType === "gaussdb" || isOpenGaussOracleCompatibility(databaseType, parameterOptions)) && statementStart !== -1 && startsWithPostgresDollarQuotedRoutinePrefix(sql.slice(statementStart, i))) {
           postgresDollarQuotedRoutine = true;
         }
         dollarTag = tagMatch[0].slice(1, -1);
@@ -588,7 +625,7 @@ export function splitSqlStatementRanges(sql: string, databaseType?: DatabaseType
         // Internal semicolons remain part of the routine body.
         flush();
       } else {
-        if (oraclePlSqlStatementEnd === undefined && isOracleLikeDatabase(databaseType) && !postgresDollarQuotedRoutine && statementStart !== -1) {
+        if (oraclePlSqlStatementEnd === undefined && isOracleLikeDatabase(databaseType, parameterOptions) && !postgresDollarQuotedRoutine && statementStart !== -1) {
           const statementSoFar = sql.slice(statementStart, i);
           oraclePlSqlStatementEnd = startsWithOraclePlSqlBlock(statementSoFar) ? statementStart + (oraclePlSqlBlockEnd(sql.slice(statementStart)) ?? sql.length - statementStart) : null;
         }
@@ -719,10 +756,12 @@ function rangeForCursorInSoftRanges(sql: string, ranges: RawStatement[], pos: nu
 }
 
 function splitStatementRangeAtSoftStarts(sql: string, statement: RawStatement, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): RawStatement[] {
-  if (isOraclePlSqlStatement(statement.sql, databaseType)) return [statement];
+  if (isOraclePlSqlStatement(statement.sql, databaseType, parameterOptions)) return [statement];
   if (isSapHanaScriptBlockStatement(statement.sql, databaseType)) return [statement];
   // Routine bodies contain top-level-looking SET/INSERT/SELECT lines that are not independent statements.
   if (isMysqlRoutineBlockDatabase(databaseType) && startsWithMysqlRoutineBlock(statement.sql, parameterOptions)) return [statement];
+  // SQL Server control-flow batches use line-oriented BEGIN/EXEC tokens inside one IF/ELSE statement.
+  if (isSqlServerIfElseControlFlowBatch(sql, statement, databaseType, parameterOptions)) return [statement];
 
   const lineStarts = topLevelSoftStatementLineStarts(sql, statement, databaseType, parameterOptions);
   if (lineStarts.length <= 1) return [statement];
@@ -762,6 +801,10 @@ function splitStatementRangeAtSoftStarts(sql: string, statement: RawStatement, d
       continue;
     }
 
+    if (currentBodyKeyword === "CREATE" && isStarRocksCreateMaterializedViewRefreshContinuation(sql, statement.from, lineStart.from, lineStart.keyword, databaseType, parameterOptions)) {
+      continue;
+    }
+
     if (currentBodyKeyword === "CREATE" && isMysqlCreateTableOptionContinuation(sql, statement.from, lineStart.from, lineStart.keyword, databaseType)) {
       continue;
     }
@@ -775,6 +818,10 @@ function splitStatementRangeAtSoftStarts(sql: string, statement: RawStatement, d
     }
 
     if (currentBodyKeyword === "UPDATE" && lineStart.keyword === "SET") {
+      continue;
+    }
+
+    if (currentBodyKeyword === "MERGE" && isMergeActionContinuation(sql, statement.from, lineStart.from, lineStart.keyword, databaseType, parameterOptions)) {
       continue;
     }
 
@@ -820,6 +867,13 @@ function splitStatementRangeAtSoftStarts(sql: string, statement: RawStatement, d
   return ranges.length > 0 ? ranges : [statement];
 }
 
+function isSqlServerIfElseControlFlowBatch(sql: string, statement: RawStatement, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): boolean {
+  if (databaseType !== "sqlserver" || !startsWithSqlWords(sql, statement.from, ["IF"], databaseType, parameterOptions)) return false;
+
+  const words = topLevelWordsBefore(sql, statement.from, statement.to, 64, databaseType, parameterOptions);
+  return words.includes("ELSE") && words.includes("BEGIN") && words.includes("END");
+}
+
 function topLevelSoftStatementLineStarts(sql: string, statement: RawStatement, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): Array<{ hitFrom: number; from: number; keyword: string }> {
   const starts: Array<{ hitFrom: number; from: number; keyword: string }> = [];
   const len = statement.to;
@@ -827,6 +881,7 @@ function topLevelSoftStatementLineStarts(sql: string, statement: RawStatement, d
   // Recover soft statement boundaries while the user is still typing an
   // EXPLAIN option list; otherwise its unmatched opener hides every later line.
   const unclosedExplainOptionsStart = explainOptionsStart !== null && skipBalancedParens(sql, explainOptionsStart, databaseType, parameterOptions) === null ? explainOptionsStart : null;
+  const backslashEscapes = allowsBackslashStringEscape(databaseType);
   let state: QuoteState | "lineComment" | "blockComment" = "none";
   let dollarTag = "";
   let parenDepth = 0;
@@ -886,7 +941,7 @@ function topLevelSoftStatementLineStarts(sql: string, statement: RawStatement, d
     }
 
     if (state === "single") {
-      if (ch === "\\" && next) {
+      if (ch === "\\" && next && backslashEscapes) {
         i += 2;
         continue;
       }
@@ -962,7 +1017,7 @@ function topLevelSoftStatementLineStarts(sql: string, statement: RawStatement, d
       i += 1;
       continue;
     }
-    if (ch === "[") {
+    if (ch === "[" && usesBracketIdentifierQuotes(databaseType)) {
       state = "bracket";
       i += 1;
       continue;
@@ -1023,6 +1078,14 @@ function isMysqlCreateTableOptionContinuation(sql: string, statementFrom: number
   return next === "=" || next === "'" || next === '"';
 }
 
+function isStarRocksCreateMaterializedViewRefreshContinuation(sql: string, statementFrom: number, lineStartFrom: number, keyword: string, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): boolean {
+  if (databaseType !== "starrocks" || keyword !== "REFRESH") return false;
+  if (!startsWithSqlWords(sql, statementFrom, ["CREATE", "MATERIALIZED", "VIEW"], databaseType, parameterOptions)) return false;
+
+  const modifier = nextSqlWord(sql, lineStartFrom + keyword.length, databaseType, parameterOptions);
+  return modifier !== null && STARROCKS_CREATE_MATERIALIZED_VIEW_REFRESH_MODIFIERS.has(modifier);
+}
+
 function isClickHouseAlterTableUpdateContinuation(sql: string, statementFrom: number, lineStartFrom: number, keyword: string, databaseType?: DatabaseType): boolean {
   if (databaseType !== "clickhouse" || keyword !== "UPDATE") return false;
   return CLICKHOUSE_ALTER_TABLE_HEADER.test(sql.slice(statementFrom, lineStartFrom));
@@ -1034,6 +1097,12 @@ function isMysqlAlterTableTruncatePartitionContinuation(sql: string, statementFr
   return nextSqlWord(sql, lineStartFrom + keyword.length, databaseType) === "PARTITION";
 }
 
+function isMergeActionContinuation(sql: string, statementFrom: number, lineStartFrom: number, keyword: string, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): boolean {
+  if (keyword !== "INSERT" || !startsWithSqlWords(sql, statementFrom, ["MERGE"], databaseType, parameterOptions)) return false;
+  const words = topLevelWordsBefore(sql, statementFrom, lineStartFrom, 5, databaseType, parameterOptions);
+  return words[words.length - 1] === "THEN" && words.includes("WHEN") && words.includes("MATCHED");
+}
+
 function startsWithMysqlCreateTable(sql: string, statementFrom: number): boolean {
   const text = sql.slice(statementFrom, statementFrom + 256);
   return /^CREATE\s+(?:TEMPORARY\s+)?TABLE\b/i.test(text);
@@ -1041,6 +1110,7 @@ function startsWithMysqlCreateTable(sql: string, statementFrom: number): boolean
 
 function topLevelWordsBefore(sql: string, from: number, to: number, limit: number, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): string[] {
   const words: string[] = [];
+  const backslashEscapes = allowsBackslashStringEscape(databaseType);
   let state: QuoteState | "lineComment" | "blockComment" = "none";
   let dollarTag = "";
   let parenDepth = 0;
@@ -1081,7 +1151,7 @@ function topLevelWordsBefore(sql: string, from: number, to: number, limit: numbe
     }
 
     if (state === "single") {
-      if (ch === "\\" && next) {
+      if (ch === "\\" && next && backslashEscapes) {
         i += 2;
         continue;
       }
@@ -1156,7 +1226,7 @@ function topLevelWordsBefore(sql: string, from: number, to: number, limit: numbe
       i += 1;
       continue;
     }
-    if (ch === "[") {
+    if (ch === "[" && usesBracketIdentifierQuotes(databaseType)) {
       state = "bracket";
       i += 1;
       continue;
@@ -1364,7 +1434,10 @@ function startsLineComment(sql: string, pos: number, databaseType?: DatabaseType
 }
 
 function startsHashLineComment(sql: string, pos: number, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): boolean {
-  if (databaseType === "sqlserver" || sql[pos] !== "#") return false;
+  // `#` is a MySQL-family line-comment marker. Oracle-family engines also allow
+  // it in unquoted identifiers (for example `V$DATAFILE.FILE#`), so treating it
+  // as a comment there truncates otherwise valid statements.
+  if ((databaseType !== undefined && ORACLE_LIKE_PL_SQL_DATABASES.has(databaseType)) || databaseType === "sqlserver" || sql[pos] !== "#") return false;
   return readSqlBracedParameterAt(sql, pos, parameterOptions)?.syntax !== "mybatis";
 }
 
@@ -1381,6 +1454,7 @@ function trimRangeEnd(sql: string, from: number, to: number): number {
 }
 
 function trimRangeEndBeforeNextBoundary(sql: string, from: number, nextBoundaryFrom: number, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions): number {
+  const backslashEscapes = allowsBackslashStringEscape(databaseType);
   let state: QuoteState | "lineComment" | "blockComment" = "none";
   let dollarTag = "";
   let lastContentEnd = from;
@@ -1424,7 +1498,7 @@ function trimRangeEndBeforeNextBoundary(sql: string, from: number, nextBoundaryF
 
     if (state === "single") {
       lastContentEnd = i + 1;
-      if (ch === "\\" && next) {
+      if (ch === "\\" && next && backslashEscapes) {
         i += 2;
         lastContentEnd = i;
         continue;
@@ -1509,7 +1583,7 @@ function trimRangeEndBeforeNextBoundary(sql: string, from: number, nextBoundaryF
       i += 1;
       continue;
     }
-    if (ch === "[") {
+    if (ch === "[" && usesBracketIdentifierQuotes(databaseType)) {
       state = "bracket";
       lastContentEnd = i + 1;
       i += 1;
@@ -1539,12 +1613,27 @@ function isSqlWhitespace(ch: string): boolean {
   return ch === " " || ch === "\t" || ch === "\r" || ch === "\n";
 }
 
-export function isOracleLikeDatabase(databaseType?: DatabaseType): boolean {
-  return !!databaseType && ORACLE_LIKE_PL_SQL_DATABASES.has(databaseType);
+function isOpenGaussOracleCompatibility(databaseType?: DatabaseType, options?: SqlParameterOptions): boolean {
+  if (databaseType !== "opengauss") return false;
+  const mode = options?.compatibilityMode?.trim().toUpperCase();
+  // Unknown mode is handled conservatively so an A-mode package is never
+  // split into executable fragments before metadata loading finishes.
+  return mode === undefined || mode === "A";
 }
 
-export function isOraclePlSqlStatement(sql: string, databaseType?: DatabaseType): boolean {
-  return isOracleLikeDatabase(databaseType) && startsWithOraclePlSqlBlock(sql);
+export function sqlStatementParameterOptionsForCompatibility(databaseType?: DatabaseType, compatibilityMode?: string): SqlParameterOptions | undefined {
+  if (databaseType !== "opengauss") return undefined;
+  // Keep the browser-side splitter aligned with the backend's conservative
+  // behavior while the compatibility probe is still cold or unavailable.
+  return { compatibilityMode: compatibilityMode?.trim() || "A" };
+}
+
+export function isOracleLikeDatabase(databaseType?: DatabaseType, options?: SqlParameterOptions): boolean {
+  return !!databaseType && (ORACLE_LIKE_PL_SQL_DATABASES.has(databaseType) || isOpenGaussOracleCompatibility(databaseType, options));
+}
+
+export function isOraclePlSqlStatement(sql: string, databaseType?: DatabaseType, options?: SqlParameterOptions): boolean {
+  return isOracleLikeDatabase(databaseType, options) && startsWithOraclePlSqlBlock(sql);
 }
 
 function isSapHanaScriptBlockDatabase(databaseType?: DatabaseType): boolean {
@@ -1707,6 +1796,8 @@ function mysqlRoutineTokens(sql: string, parameterOptions?: SqlParameterOptions,
       continue;
     }
     if (state === "single") {
+      // mysqlRoutineTokens runs only for MYSQL_ROUTINE_BLOCK_DATABASES (all MySQL-family), so
+      // backslash escaping here (and in the double branch below) is unconditionally correct.
       if (ch === "\\" && next) {
         i += 2;
         continue;

@@ -20,6 +20,9 @@ system-fonts = ["font-kit"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision", "preserve_order"] }
+semver = "1"
+ed25519-dalek = "2"
+fs2 = "0.4"
 utoipa = { version = "5.5", optional = true }
 unicode-width = "0.2"
 unicode-ident = "1"
@@ -37,7 +40,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 chrono = { version = "0.4", features = ["serde"] }
 httpdate = "1"
-rust_decimal = { version = "1", features = ["serde", "db-postgres"] }
+rust_decimal = { version = "1", features = ["serde"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
@@ -48,6 +51,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 webpki-roots = "0.26"
 rusqlite = { version = "0.32", default-features = false, features = ["load_extension", "backup", "functions", "column_decltype"] }
 libsqlite3-hotbundle = { git = "https://github.com/zipg/libsqlite3-hotbundle.git", rev = "7f12f203b4f4694a273410bd9b02d77f82b6114e", features = ["cipher-sqlcipher"], optional = true }
+dbx-sqlite-worker = { path = "../dbx-sqlite-worker", default-features = false }
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls", "client_ed25519", "chrono", "rust_decimal"] }
 sqlparser = { version = "0.62.0", features = ["visitor"] }
 redis = { version = "0.32.2", features = ["tokio-comp", "tls-rustls", "tls-rustls-insecure", "tokio-rustls-comp", "sentinel", "cluster-async"] }
@@ -79,6 +83,8 @@ bytes = "1"
 font-kit = { version = "0.14.3", optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 flate2 = "1"
+crc = "3"
+sha1 = "0.10"
 tar = "0.4"
 zstd = "0.13"
 sysinfo = { version = "0.32", features = ["system"] }
@@ -88,9 +94,6 @@ notify = { version = "7", default-features = false, features = ["macos_kqueue"] 
 arc-swap = "1"
 insta = { version = "1", features = ["json", "glob"] }
 tempfile = "3"
-
-[target.'cfg(not(all(windows, target_vendor = "win7")))'.dependencies]
-iana-time-zone = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }

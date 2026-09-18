@@ -115,6 +115,7 @@ pub async fn list_tables(client: &RqliteClient, _schema: &str) -> Result<Vec<Tab
             TableInfo {
                 name: value_as_string(row.first()).unwrap_or_default(),
                 table_type: if table_type.eq_ignore_ascii_case("view") { "VIEW" } else { "BASE TABLE" }.to_string(),
+                valid: None,
                 comment: None,
                 parent_schema: None,
                 parent_name: None,
@@ -180,6 +181,9 @@ pub async fn list_indexes(client: &RqliteClient, _schema: &str, table: &str) -> 
             included_columns: None,
             comment: None,
             key_is_expression: Vec::new(),
+            column_opclasses: vec![],
+            key_options: Vec::new(),
+            constraint_backed: false,
         });
     }
 
