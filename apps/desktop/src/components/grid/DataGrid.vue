@@ -40,6 +40,7 @@ import {
   PanelRight,
   RefreshCw,
   RefreshCcw,
+  Timer,
   TableProperties,
   UserRound,
   Database,
@@ -3474,6 +3475,7 @@ watch(
 );
 const manualTotalRowCount = ref<number | undefined>(undefined);
 const manualTotalRowCountLoading = ref(false);
+const backgroundTotalRowCountLoading = ref(false);
 const showTruncationWarning = computed(() => props.result.truncated === true && typeof props.pageLimit !== "number" && props.result.has_more !== true);
 const truncationHintKey = computed(() => dataGridTruncationHintKey(resolvedDatabaseType.value));
 // affected_rows reported by the backend can be larger than the rows we
@@ -3549,7 +3551,7 @@ const canFetchNextInfiniteScrollSegment = computed(() =>
   }),
 );
 const canJumpLastPage = computed(() => canGoNextPage.value && (hasKnownPaginationTotalRowCount.value || allRowsLoaded.value || !!props.tableMeta || !!props.countSql || !!props.countTotalRows));
-const totalRowCountBusy = computed(() => props.totalRowCountLoading === true || manualTotalRowCountLoading.value);
+const totalRowCountBusy = computed(() => props.totalRowCountLoading === true || manualTotalRowCountLoading.value || backgroundTotalRowCountLoading.value);
 /** Automatic background counts keep rows interactive; explicit count navigation still blocks the surface. */
 const gridSurfaceBusy = computed(() => isRefreshingData.value || props.loading === true || manualTotalRowCountLoading.value);
 const gridPaginationBusy = computed(() => gridSurfaceBusy.value || totalRowCountBusy.value);
@@ -3563,6 +3565,19 @@ watch(
   { immediate: true },
 );
 const canCalculateTotalRowCount = computed(() => !!props.countTotalRows || (!!props.connectionId && (!!props.tableMeta || !!props.countSql)));
+const totalRowCountAutoRefresh = useDataGridAutoRefresh({
+  initialIntervalSeconds: 5,
+  canRefresh: computed(() => canCalculateTotalRowCount.value && hasData.value && !isErrorResult.value && !gridSurfaceBusy.value && !totalRowCountBusy.value && !isSaving.value),
+  refresh: () => calculateTotalRowCount(true),
+});
+const totalRowCountAutoRefreshEnabled = totalRowCountAutoRefresh.enabled;
+const totalRowCountAutoRefreshLabel = computed(() => `${t("grid.calculateTotalRows")} · ${t(totalRowCountAutoRefreshEnabled.value ? "tabs.stopAutoRefresh" : "tabs.startAutoRefresh")} · ${t("tabs.autoRefreshEvery", { seconds: 5 })}`);
+
+function toggleTotalRowCountAutoRefresh() {
+  totalRowCountAutoRefresh.toggle();
+  if (totalRowCountAutoRefreshEnabled.value) void calculateTotalRowCount(true);
+}
+
 const showExactTotalCountAction = computed(() => canCalculateTotalRowCount.value && (totalRowCountIsExact.value === false || typeof displayedTotalRowCount.value !== "number"));
 const showRerunTotalCountAction = computed(() =>
   showDataGridRerunTotalCountAction({
@@ -3666,6 +3681,19 @@ function currentOrderBy(): string | undefined {
   return orderByInput.value.trim() || (sortCol.value ? `${queryColumnRef(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined);
 }
 
+const totalRowCountContext = computed(() => [
+  props.countSql ?? "",
+  props.sql ?? "",
+  props.tableMeta?.catalog ?? "",
+  props.tableMeta?.database ?? "",
+  props.tableMeta?.schema ?? "",
+  props.tableMeta?.tableName ?? "",
+  currentWhereInput() ?? "",
+  props.database ?? "",
+  props.executionDatabase ?? "",
+  props.schema ?? "",
+  props.connectionId ?? "",
+]);
 watch(
   () => [props.countSql ?? "", props.tableMeta?.schema ?? "", props.tableMeta?.tableName ?? "", currentWhereInput() ?? "", props.database ?? "", props.connectionId ?? ""],
   (values, previousValues) => {
@@ -3797,7 +3825,7 @@ function jumpToCountedLastPage(total: number) {
 }
 
 async function beginManualTotalRowCount(): Promise<boolean> {
-  if (manualTotalRowCountLoading.value) return false;
+  if (totalRowCountBusy.value) return false;
   manualTotalRowCountLoading.value = true;
   // Flush busy UI (overlay / spinner) before the slow COUNT starts.
   await nextTick();
@@ -3898,28 +3926,37 @@ async function buildCurrentCountTarget(): Promise<{ sql: string; schema?: string
   return undefined;
 }
 
-async function calculateTotalRowCount() {
-  if (!(await beginManualTotalRowCount())) return;
+async function calculateTotalRowCount(background = false) {
+  if (background) {
+    if (!canCalculateTotalRowCount.value || gridSurfaceBusy.value || totalRowCountBusy.value || isSaving.value) return;
+    backgroundTotalRowCountLoading.value = true;
+  } else if (!(await beginManualTotalRowCount())) return;
+  const countContext = totalRowCountContext.value;
+  const countTotalRows = props.countTotalRows;
+  const isCurrentCount = () => countContext === totalRowCountContext.value && countTotalRows === props.countTotalRows;
   try {
-    if (props.countTotalRows) {
-      const total = await props.countTotalRows();
-      if (typeof total === "number" && Number.isFinite(total) && total >= 0) {
+    if (countTotalRows) {
+      const total = await countTotalRows();
+      if (isCurrentCount() && typeof total === "number" && Number.isFinite(total) && total >= 0) {
         manualTotalRowCount.value = total;
       }
       return;
     }
     if (!props.connectionId) return;
     const countTarget = await buildCurrentCountTarget();
-    if (!countTarget?.sql) return;
+    if (!countTarget?.sql || !isCurrentCount()) return;
     const result = await api.executeQuery(props.connectionId, props.executionDatabase ?? props.database ?? "", countTarget.sql, countTarget.schema, undefined, dataGridCountQueryOptions(connectionStore.getConfig(props.connectionId), settingsStore.editorSettings.globalQueryTimeoutSecs));
     const total = Number(result.rows?.[0]?.[0] ?? 0);
-    if (Number.isFinite(total) && total >= 0) {
+    if (isCurrentCount() && Number.isFinite(total) && total >= 0) {
       manualTotalRowCount.value = total;
     }
   } catch (e: any) {
+    if (!isCurrentCount()) return;
+    if (background && totalRowCountAutoRefreshEnabled.value) totalRowCountAutoRefresh.toggle();
     toast(t("grid.calculateTotalRowsFailed", { message: e?.message || String(e) }), 5000);
   } finally {
-    manualTotalRowCountLoading.value = false;
+    if (background) backgroundTotalRowCountLoading.value = false;
+    else manualTotalRowCountLoading.value = false;
   }
 }
 
@@ -11502,15 +11539,18 @@ watch(gridSurfaceBusy, (isLoading) => {
 
 onActivated(() => {
   autoRefresh.start();
+  totalRowCountAutoRefresh.start();
 });
 onDeactivated(() => {
   autoRefresh.stop();
+  totalRowCountAutoRefresh.stop();
 });
 
 onUnmounted(() => {
   syncPendingDataEditorDraft(false);
   cleanupFrames();
   autoRefresh.stop();
+  totalRowCountAutoRefresh.stop();
   onDdlResizeEnd();
   onDetailResizeEnd();
   onMongoJsonPreviewResizeEnd();
@@ -14104,7 +14144,7 @@ function openGridSnapshot() {
           <span v-if="totalRowCountBusy && !(showRerunTotalCountAction && manualTotalRowCountLoading)" class="text-muted-foreground/70">
             {{ t("grid.totalRowCountLoading") }}
           </span>
-          <button v-else-if="showExactTotalCountAction" type="button" class="text-muted-foreground/70 underline underline-offset-2 hover:text-foreground disabled:pointer-events-none" :disabled="manualTotalRowCountLoading" @click="calculateTotalRowCount">
+          <button v-else-if="showExactTotalCountAction" type="button" class="text-muted-foreground/70 underline underline-offset-2 hover:text-foreground disabled:pointer-events-none" :disabled="manualTotalRowCountLoading" @click="calculateTotalRowCount()">
             {{ t("grid.calculateTotalRowsInline") }}
           </button>
           <button
@@ -14115,10 +14155,23 @@ function openGridSnapshot() {
             :aria-busy="manualTotalRowCountLoading ? 'true' : undefined"
             :title="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
             :aria-label="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
-            @click="calculateTotalRowCount"
+            @click="calculateTotalRowCount()"
           >
             <Loader2 v-if="manualTotalRowCountLoading" aria-hidden="true" class="h-3 w-3 animate-spin" />
             <RefreshCcw v-else aria-hidden="true" class="h-3 w-3" />
+          </button>
+          <button
+            v-if="canCalculateTotalRowCount"
+            type="button"
+            class="ml-1 inline-flex h-4 items-center gap-1 rounded-sm px-1 align-middle hover:bg-muted hover:text-foreground"
+            :class="totalRowCountAutoRefreshEnabled ? 'bg-primary/10 text-primary' : 'text-muted-foreground/70'"
+            :title="totalRowCountAutoRefreshLabel"
+            :aria-label="totalRowCountAutoRefreshLabel"
+            :aria-pressed="totalRowCountAutoRefreshEnabled"
+            @click="toggleTotalRowCountAutoRefresh"
+          >
+            <Timer aria-hidden="true" class="h-3 w-3" />
+            <span>5s</span>
           </button>
         </span>
         <span v-if="showTruncationWarning" class="shrink-0 text-amber-500 text-xs">(truncated)</span>
