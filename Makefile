@@ -1,4 +1,4 @@
-.DEFAULT_GOAL := dev
+.DEFAULT_GOAL := help
 
 PNPM ?= pnpm
 TAURI_DEV_PORT ?= 1420
@@ -19,46 +19,10 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 docs/node_modules/.modules.yaml: docs/package.json docs/pnpm-lock.yaml docs/pnpm-workspace.yaml $(wildcard docs/patches/*.patch)
 	cd docs && $(PNPM) install --frozen-lockfile
 
-help:
-	@printf '%s\n' 'DBX development targets:'
-	@printf '%s\n' ''
-	@printf '%s\n' 'App:'
-	@printf '  %-23s %s\n' 'make' 'Start the local desktop development environment'
-	@printf '  %-23s %s\n' 'make dev' 'Start the local desktop development environment'
-	@printf '  %-23s %s\n' 'make dev-fast' 'Start lightweight Tauri dev with DuckDB sidecar support'
-	@printf '  %-23s %s\n' 'make dev-web' 'Start the web frontend development server'
-	@printf '  %-23s %s\n' 'make dev-backend' 'Start the web backend development server'
-	@printf '  %-23s %s\n' 'make build' 'Run type checks and build the desktop frontend'
-	@printf '  %-23s %s\n' 'make package' 'Build the desktop app package'
-	@printf '  %-23s %s\n' 'make clean' 'Remove local Rust build artifacts and caches'
-	@printf '%s\n' ''
-	@printf '%s\n' 'Docs:'
-	@printf '  %-23s %s\n' 'make docs' 'Start the documentation site development server'
-	@printf '  %-23s %s\n' 'make docs-build' 'Build the documentation site'
-	@printf '  %-23s %s\n' 'make docs-install' 'Install documentation site dependencies'
-	@printf '%s\n' ''
-	@printf '%s\n' 'Checks:'
-	@printf '  %-23s %s\n' 'make check' 'Run project checks'
-	@printf '  %-23s %s\n' 'make test' 'Run project tests'
-	@printf '  %-23s %s\n' 'make cargo-check-fast' 'Run Rust check without default features'
-	@printf '  %-23s %s\n' 'make cargo-test-fast' 'Run Rust tests without default features'
-	@printf '%s\n' ''
-	@printf '%s\n' 'Database test environments:'
-	@printf '  %-23s %s\n' 'make db-list' 'List available database versions'
-	@printf '  %-23s %s\n' 'make db DB=mysql@8.4' 'Start and print DBX connection fields'
-	@printf '  %-23s %s\n' 'make db-verify DB=mysql@8.4' 'Start and run smoke checks'
-	@printf '  %-23s %s\n' 'make db-down DB=mysql@8.4' 'Stop an environment'
-	@printf '  %-23s %s\n' 'make db-reset DB=mysql@8.4 CONFIRM=1' 'Delete containers and data'
-	@printf '  %-23s %s\n' 'make db-check' 'Validate every recipe and Compose file'
-	@printf '  %-23s %s\n' 'make db-completion' 'Show Bash/Zsh completion setup'
-	@printf '%s\n' ''
-	@printf '%s\n' 'Setup:'
-	@printf '  %-23s %s\n' 'make install' 'Install root project dependencies'
-
-install:
+install: ## Install root project dependencies
 	$(PNPM) install --frozen-lockfile
 
-docs-install:
+docs-install: ## Install documentation site dependencies
 	cd docs && $(PNPM) install --frozen-lockfile
 
 ifeq ($(OS),Windows_NT)
@@ -76,62 +40,65 @@ check-tauri-dev-port:
 	fi
 endif
 
-dev: node_modules/.modules.yaml check-tauri-dev-port
+dev: node_modules/.modules.yaml check-tauri-dev-port ## Start the local desktop development environment
 	$(PNPM) dev:tauri
 
-dev-fast: node_modules/.modules.yaml check-tauri-dev-port
+dev-fast: node_modules/.modules.yaml check-tauri-dev-port ## Start lightweight Tauri dev with DuckDB sidecar support
 	RUST_MIN_STACK=16777216 $(PNPM) tauri dev -- --no-default-features --features duckdb-sidecar,dynamodb,sqlite-bundled
 
-dev-web: node_modules/.modules.yaml
+dev-web: node_modules/.modules.yaml ## Start the web frontend development server
 	$(PNPM) dev:web
 
-dev-backend: node_modules/.modules.yaml
+dev-backend: node_modules/.modules.yaml ## Start the web backend development server
 	$(PNPM) dev:backend
 
-build: node_modules/.modules.yaml
+build: node_modules/.modules.yaml ## Run type checks and build the desktop frontend
 	$(PNPM) build:checked
 
-package: node_modules/.modules.yaml
+package: node_modules/.modules.yaml ## Build the desktop app package
 	$(PNPM) tauri build
 
-clean:
+clean: ## Remove local Rust build artifacts and caches
 	cargo clean
 
-docs: docs/node_modules/.modules.yaml
+docs: docs/node_modules/.modules.yaml ## Start the documentation site development server
 	cd docs && ./node_modules/.bin/next dev --hostname 127.0.0.1
 
-docs-build: docs/node_modules/.modules.yaml
+docs-build: docs/node_modules/.modules.yaml ## Build the documentation site
 	cd docs && ./node_modules/.bin/next build && node scripts/generate-sitemap.mjs
 
-check: node_modules/.modules.yaml
+check: node_modules/.modules.yaml ## Run project checks
 	$(PNPM) check
 
-test: node_modules/.modules.yaml
+test: node_modules/.modules.yaml ## Run project tests
 	$(PNPM) test
 
-cargo-check-fast:
+cargo-check-fast: ## Run Rust check without default features
 	cargo check --no-default-features --features sqlite-bundled
 
-cargo-test-fast:
+cargo-test-fast: ## Run Rust tests without default features
 	RUST_MIN_STACK=8388608 cargo test --no-default-features --features sqlite-bundled
 
-db-list:
+db-list: ## List available database versions
 	@$(PNPM) db:env -- list
 
-db:
+db: ## Start and print DBX connection fields, e.g. DB=mysql@8.4
 	@$(PNPM) db:env -- start
 
-db-verify:
+db-verify: ## Start and run smoke checks, e.g. DB=mysql@8.4
 	@$(PNPM) db:env -- verify
 
-db-down:
+db-down: ## Stop an environment, e.g. DB=mysql@8.4
 	@$(PNPM) db:env -- down
 
-db-reset:
+db-reset: ## Delete containers and data, e.g. DB=mysql@8.4 CONFIRM=1
 	@$(PNPM) db:env -- reset
 
-db-check:
+db-check: ## Validate every recipe and Compose file
 	@$(PNPM) db:env -- check
 
-db-completion:
+db-completion: ## Show Bash/Zsh completion setup
 	@$(PNPM) db:env -- completion
+
+help: ## Show this help
+	@grep -h -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
