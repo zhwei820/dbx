@@ -13692,7 +13692,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 :aria-busy="manualTotalRowCountLoading ? 'true' : undefined"
                 :title="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
                 :aria-label="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
-                @click="calculateTotalRowCount"
+                @click="calculateTotalRowCount()"
               >
                 <Loader2 v-if="manualTotalRowCountLoading" aria-hidden="true" class="h-3 w-3 animate-spin" />
                 <RefreshCcw v-else aria-hidden="true" class="h-3 w-3" />
