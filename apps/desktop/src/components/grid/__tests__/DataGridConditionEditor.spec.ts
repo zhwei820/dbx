@@ -345,7 +345,10 @@ describe("DataGridConditionEditor quote completion", () => {
     expect(collapseTransferBody).toContain("const start = selectionStart.value");
     expect(collapseTransferBody).toContain("input.setSelectionRange(start, end)");
     expect(collapseTransferBody).toContain("input.focus({ preventScroll: true })");
-    expect(collapseTransferBody!.indexOf("input.focus({ preventScroll: true })")).toBeLessThan(collapseTransferBody!.indexOf("input.setSelectionRange(start, end)"));
+    // WebKit restores a textarea's cached selection on focus(), so the range must be set both before and after focusing.
+    const focusIndex = collapseTransferBody!.indexOf("input.focus({ preventScroll: true })");
+    expect(collapseTransferBody!.indexOf("input.setSelectionRange(start, end)")).toBeLessThan(focusIndex);
+    expect(collapseTransferBody!.lastIndexOf("input.setSelectionRange(start, end)")).toBeGreaterThan(focusIndex);
     expect(collapseTransferBody).toContain("scheduleCaretIntoView()");
   });
 

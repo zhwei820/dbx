@@ -5,7 +5,7 @@ TAURI_DEV_PORT ?= 1420
 APP_BUNDLE ?= target/release/bundle/macos/DBX.app
 APP_INSTALL_DIR ?= /Applications
 # Inputs of the packaged app; a file under these newer than APP_BUNDLE triggers a rebuild.
-APP_SOURCES := apps crates src-tauri packages vendor Cargo.toml Cargo.lock package.json pnpm-lock.yaml
+APP_SOURCES := apps crates src-tauri packages plugins vendor scripts/sync-connection-types.mjs Cargo.toml Cargo.lock package.json pnpm-lock.yaml pnpm-workspace.yaml
 
 .PHONY: help install docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
 
