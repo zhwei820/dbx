@@ -6,6 +6,10 @@ APP_BUNDLE ?= target/release/bundle/macos/DBX.app
 APP_INSTALL_DIR ?= /Applications
 # Inputs of the packaged app; a file under these newer than APP_BUNDLE triggers a rebuild.
 APP_SOURCES := apps crates src-tauri packages plugins vendor scripts/sync-connection-types.mjs Cargo.toml Cargo.lock package.json pnpm-lock.yaml pnpm-workspace.yaml
+# Signing the updater archive needs the release private key; without it, skip updater artifacts so local builds succeed.
+ifeq ($(TAURI_SIGNING_PRIVATE_KEY),)
+TAURI_BUILD_FLAGS ?= --config '{"bundle":{"createUpdaterArtifacts":false}}'
+endif
 
 .PHONY: help install docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
 
@@ -61,14 +65,14 @@ build: node_modules/.modules.yaml ## Run type checks and build the desktop front
 
 # CI=true makes Tauri pass --skip-jenkins to bundle_dmg.sh, so the DMG step does not pop up a Finder window.
 package: node_modules/.modules.yaml ## Build the desktop app package
-	CI=true $(PNPM) tauri build
+	CI=true $(PNPM) tauri build $(TAURI_BUILD_FLAGS)
 
 reinstall: node_modules/.modules.yaml ## Rebuild DBX.app if sources changed, then replace it in /Applications (macOS). FORCE=1 always rebuilds
 	@test "$$(uname)" = Darwin || { echo "make reinstall only supports macOS"; exit 1; }
 	@newest=$$(git ls-files -co --exclude-standard -z -- $(APP_SOURCES) | xargs -0 stat -f '%m' 2>/dev/null | sort -n | tail -1); \
 	if [ "$(FORCE)" = 1 ] || [ ! -d "$(APP_BUNDLE)" ] || [ "$$newest" -gt "$$(stat -f '%m' "$(APP_BUNDLE)")" ]; then \
 		echo "==> Sources changed since last package, rebuilding $(APP_BUNDLE)"; \
-		$(PNPM) tauri build --bundles app && touch "$(APP_BUNDLE)"; \
+		$(PNPM) tauri build --bundles app $(TAURI_BUILD_FLAGS) && touch "$(APP_BUNDLE)"; \
 	else \
 		echo "==> $(APP_BUNDLE) is up to date, skipping build"; \
 	fi
