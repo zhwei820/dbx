@@ -59,8 +59,9 @@ dev-backend: node_modules/.modules.yaml ## Start the web backend development ser
 build: node_modules/.modules.yaml ## Run type checks and build the desktop frontend
 	$(PNPM) build:checked
 
+# CI=true makes Tauri pass --skip-jenkins to bundle_dmg.sh, so the DMG step does not pop up a Finder window.
 package: node_modules/.modules.yaml ## Build the desktop app package
-	$(PNPM) tauri build
+	CI=true $(PNPM) tauri build
 
 reinstall: node_modules/.modules.yaml ## Rebuild DBX.app if sources changed, then replace it in /Applications (macOS). FORCE=1 always rebuilds
 	@test "$$(uname)" = Darwin || { echo "make reinstall only supports macOS"; exit 1; }
