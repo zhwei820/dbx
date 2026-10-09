@@ -130,6 +130,8 @@ import { useUiFontFamilyPreview } from "@/composables/useUiFontFamilyPreview";
 import { createUiScaleApplyQueue } from "@/lib/app/uiScaleApplyQueue";
 import { savedSqlErrorMessage } from "@/lib/savedSql/savedSqlErrors";
 import { savedSqlDefaultTargetForWrite } from "@/lib/savedSql/savedSqlExecutionTarget";
+import { savedSqlDatabaseScopeKey } from "@/lib/savedSql/savedSqlDatabaseTree";
+import { uniqueSavedSqlExportFileName } from "@/lib/savedSql/savedSqlExport";
 import { countActiveUpdateBlockingTasks } from "@/lib/app/appUpdateTaskGuard";
 import { initSavedSqlEditorPositions } from "@/lib/app/savedSqlEditorPosition";
 import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
@@ -1634,6 +1636,19 @@ function defaultSavedSqlName(title: string) {
   return normalized.endsWith(".sql") ? normalized : `${normalized}.sql`;
 }
 
+function defaultSavedSqlBaseName(tab: QueryTab) {
+  return tab.database?.trim() || tab.title;
+}
+
+// Default library name for a new save: the tab's database name, suffixed " (n)" when the
+// root folder of that database already holds it, so the no-dialog save path cannot hit a name conflict.
+function defaultSavedSqlNameForTab(tab: QueryTab) {
+  const target = savedSqlTargetForSave(tab);
+  const scopeKey = savedSqlDatabaseScopeKey(target);
+  const taken = new Set(savedSqlStore.allFiles.filter((file) => file.id !== tab.savedSqlId && !file.folderId && savedSqlDatabaseScopeKey(file) === scopeKey).map((file) => file.name));
+  return uniqueSavedSqlExportFileName(defaultSavedSqlName(defaultSavedSqlBaseName(tab)), taken);
+}
+
 function notifySqlLibrarySaved() {
   sqlLibrarySaveFeedbackId.value += 1;
   toast(t("savedSql.saved"), 2000);
@@ -1917,7 +1932,7 @@ async function saveTabForCloseAll(tabId: string): Promise<boolean> {
       id: existing?.id,
       connectionId: target.connectionId,
       folderId: existing?.folderId,
-      name: existing?.name || defaultSavedSqlName(tab.title),
+      name: existing?.name || defaultSavedSqlNameForTab(tab),
       database: target.database,
       catalog: target.catalog,
       schema: target.schema,
@@ -2005,7 +2020,7 @@ async function handleSaveTab(tabId: string) {
   const prevActive = queryStore.activeTabId;
   queryStore.activateTab(tabId);
   saveSqlDialogTabId.value = tabId;
-  saveSqlName.value = defaultSavedSqlName(tab.title);
+  saveSqlName.value = defaultSavedSqlNameForTab(tab);
   resetSaveSqlFolderSelection(ROOT_SAVED_SQL_FOLDER);
   pendingSaveAndCloseTabId.value = tabId;
   pendingPrevActiveTabId.value = prevActive;
@@ -2044,7 +2059,7 @@ async function openSaveSqlDialog(tabId?: string) {
     return;
   }
 
-  saveSqlName.value = defaultSavedSqlName(tab.title);
+  saveSqlName.value = defaultSavedSqlNameForTab(tab);
   resetSaveSqlFolderSelection(ROOT_SAVED_SQL_FOLDER);
   showSaveSqlDialog.value = true;
 }
@@ -2152,7 +2167,7 @@ async function saveExternalSqlTabAs(tab: QueryTab): Promise<boolean> {
     // name and extension when saving a copy instead of being forced to .sql.
     const currentFileName = tab.externalSqlPath?.split(/[\\/]/).pop()?.trim() ?? "";
     const filterExtension = currentFileName.includes(".") ? currentFileName.split(".").pop()?.toLowerCase() : undefined;
-    const saved = await api.saveExternalSqlFile(currentFileName || defaultSavedSqlName(tab.title), await formattedSqlForSave(tab), filterExtension);
+    const saved = await api.saveExternalSqlFile(currentFileName || defaultSavedSqlName(defaultSavedSqlBaseName(tab)), await formattedSqlForSave(tab), filterExtension);
     if (!saved) return false;
     queryStore.linkExternalSqlPath(tab.id, saved.path, sqlFileTitleFromPath(saved.path), saved.version);
     rememberExternalSqlFileTarget(saved.path, { connectionId: tab.connectionId, database: tab.database, catalog: tab.catalog, schema: tab.schema });
