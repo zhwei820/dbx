@@ -3,10 +3,11 @@ import { ref, computed, watch, onMounted, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { AlignLeft, Copy, ChevronDown, Undo2, Redo2 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
+import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useTheme } from "@/composables/useTheme";
 import { useToast } from "@/composables/useToast";
-import { copyToClipboard } from "@/lib/common/clipboard";
+import { copyToClipboard, isPlainClipboardShortcut } from "@/lib/common/clipboard";
 import { formatSqlText, type SqlFormatDialect } from "@/lib/sql/sqlFormatter";
 import { createShikiSqlHighlighter, type SqlHighlighter } from "@/lib/sql/sqlHighlighter";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -35,6 +36,7 @@ const formattedSql = ref("");
 const formatting = ref(false);
 const highlightedHtml = ref("");
 const highlighterReady = ref(false);
+const contentRef = ref<HTMLElement>();
 
 let highlighter: SqlHighlighter | null = null;
 
@@ -91,8 +93,51 @@ async function toggleFormat() {
   }
 }
 
+function selectedPreviewText(): string {
+  const selection = window.getSelection();
+  const content = contentRef.value;
+  if (!selection || selection.isCollapsed || !content) return "";
+  if (!content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return "";
+  return selection.toString();
+}
+
+function selectAllPreviewSql() {
+  const sqlElement = contentRef.value?.querySelector("pre");
+  const selection = window.getSelection();
+  if (!sqlElement || !selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(sqlElement);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+// The surrounding DataGrid owns Mod+C / Mod+A for cell selection; keep them inside the preview.
+function onContentKeydown(event: KeyboardEvent) {
+  if (isPlainClipboardShortcut(event, "a")) {
+    event.preventDefault();
+    event.stopPropagation();
+    selectAllPreviewSql();
+    return;
+  }
+  if (isPlainClipboardShortcut(event, "c")) {
+    const text = selectedPreviewText();
+    if (!text) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void copyText(text);
+  }
+}
+
+const contextMenuItems = (): ContextMenuItem[] => [
+  { label: t("grid.copy"), icon: Copy, shortcut: "Mod+C", disabled: !hasSql.value, action: () => void copyText(selectedPreviewText() || displaySql.value) },
+  { label: t("grid.previewSqlSelectAll"), shortcut: "Mod+A", disabled: !hasSql.value, action: selectAllPreviewSql },
+];
+
 async function handleCopy() {
-  const text = displaySql.value;
+  await copyText(displaySql.value);
+}
+
+async function copyText(text: string) {
   if (!text.trim()) return;
   try {
     await copyToClipboard(text);
@@ -181,22 +226,24 @@ onMounted(() => {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 min-h-0 overflow-auto">
-      <!-- Loading -->
-      <div v-if="loading" class="flex items-center justify-center h-full text-xs text-muted-foreground">
-        {{ t("common.loading") }}
+    <CustomContextMenu :items="contextMenuItems" v-slot="{ onContextMenu }">
+      <div ref="contentRef" data-native-clipboard tabindex="-1" class="flex-1 min-h-0 overflow-auto outline-none" @keydown="onContentKeydown" @contextmenu="onContextMenu">
+        <!-- Loading -->
+        <div v-if="loading" class="flex items-center justify-center h-full text-xs text-muted-foreground">
+          {{ t("common.loading") }}
+        </div>
+
+        <!-- Empty -->
+        <div v-else-if="!hasSql" class="flex items-center justify-center h-full text-xs text-muted-foreground">
+          {{ t("grid.previewSqlEmpty") }}
+        </div>
+
+        <!-- Shiki highlighted SQL -->
+        <pre v-else-if="highlightedHtml" data-native-clipboard class="m-0 p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-words select-text" v-html="highlightedHtml"></pre>
+
+        <!-- Plain text fallback -->
+        <pre v-else data-native-clipboard class="p-3 text-xs font-mono whitespace-pre-wrap select-text">{{ displaySql }}</pre>
       </div>
-
-      <!-- Empty -->
-      <div v-else-if="!hasSql" class="flex items-center justify-center h-full text-xs text-muted-foreground">
-        {{ t("grid.previewSqlEmpty") }}
-      </div>
-
-      <!-- Shiki highlighted SQL -->
-      <pre v-else-if="highlightedHtml" data-native-clipboard class="m-0 p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-words select-text" v-html="highlightedHtml"></pre>
-
-      <!-- Plain text fallback -->
-      <pre v-else data-native-clipboard class="p-3 text-xs font-mono whitespace-pre-wrap select-text">{{ displaySql }}</pre>
-    </div>
+    </CustomContextMenu>
   </div>
 </template>

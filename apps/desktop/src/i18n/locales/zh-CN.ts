@@ -1920,6 +1920,7 @@ export default withEnglishFallback({
     cut: "已剪切",
     copyFailed: "复制失败：{message}",
     previewSqlEmpty: "暂无待预览的 SQL 更改",
+    previewSqlSelectAll: "全选",
     renderMode: "渲染模式",
     domRenderMode: "DOM",
     canvasRenderMode: "Canvas",

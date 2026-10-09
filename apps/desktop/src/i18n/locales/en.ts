@@ -2005,6 +2005,7 @@ export default {
     copied: "Copied",
     copyFailed: "Copy failed: {message}",
     previewSqlEmpty: "No pending SQL changes to preview",
+    previewSqlSelectAll: "Select all",
     renderMode: "Render Mode",
     domRenderMode: "DOM",
     canvasRenderMode: "Canvas",
