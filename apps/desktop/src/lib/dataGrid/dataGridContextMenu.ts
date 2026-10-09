@@ -74,6 +74,7 @@ export function createDataGridColumnContextMenuItems(options: {
   headerColumn: boolean;
   contextColumn: boolean;
   canCopyAlterSql: boolean;
+  canGroupBy?: boolean;
   canFilter: boolean;
   hasSort: boolean;
   sortMode: "database" | "local";
@@ -90,13 +91,14 @@ export function createDataGridColumnContextMenuItems(options: {
   labels: Record<
     "copyName" | "copyNames" | "details" | "copyAlterSql" | "databaseAscending" | "databaseDescending" | "localAscending" | "localDescending" | "clearSort" | "freezeToColumn" | "freezeSelectedColumns" | "unfreezeColumns" | "hideColumn" | "hideSelectedColumns" | "showAllColumnsMenu",
     string
-  >;
+  > & { groupBy?: string };
   icons: Pick<DataGridContextMenuIcons, "copy" | "columnDetails" | "database" | "ascending" | "descending" | "clearSort">;
   actions: {
     copyName: () => void;
     copyNames: () => void;
     details: () => void;
     copyAlterSql: () => void;
+    groupBy?: () => void;
     sort: (direction: "asc" | "desc" | null, mode: "database" | "local") => void;
     freezeToColumn: () => void;
     freezeSelectedColumns: () => void;
@@ -113,6 +115,7 @@ export function createDataGridColumnContextMenuItems(options: {
     items.push({ label: options.labels.copyNames, action: options.actions.copyNames, icon: options.icons.copy });
     items.push({ label: options.labels.details, action: options.actions.details, icon: options.icons.columnDetails });
     if (options.canCopyAlterSql) items.push({ label: options.labels.copyAlterSql, action: options.actions.copyAlterSql, icon: options.icons.copy });
+    if (options.canGroupBy && options.labels.groupBy && options.actions.groupBy) items.push({ label: options.labels.groupBy, action: options.actions.groupBy, icon: options.icons.database });
   }
   if (!options.contextColumn && !options.headerColumn) return items;
   if (options.contextColumn) {

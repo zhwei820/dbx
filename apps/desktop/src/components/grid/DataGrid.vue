@@ -100,7 +100,7 @@ import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
 import { dataGridCellDisplayText, dataGridCellEditorText } from "@/lib/dataGrid/dataGridCellCoercion";
 import { createColumnDrafts } from "@/lib/table/tableStructureEditorState";
 import type { BuildSingleColumnAlterSqlOptions } from "@/lib/table/tableStructureEditorSql";
-import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
+import { buildTableSelectSql, qualifiedTableName, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
 import { shortcutKeyLabel } from "@/lib/editor/shortcutDisplay";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind } from "@/lib/dataGrid/cellValueGeneration";
@@ -374,6 +374,7 @@ const DataGridMongoJsonPreview = defineAsyncComponent(() => import("@/components
 const DataGridDetailDialogs = defineAsyncComponent(() => import("@/components/grid/DataGridDetailDialogs.vue"));
 const DataGridBulkEditDialog = defineAsyncComponent(() => import("@/components/grid/DataGridBulkEditDialog.vue"));
 const DataGridCopyColumnNamesDialog = defineAsyncComponent(() => import("@/components/grid/DataGridCopyColumnNamesDialog.vue"));
+const DataGridGroupByDialog = defineAsyncComponent(() => import("@/components/grid/DataGridGroupByDialog.vue"));
 const DataGridInsertRowsDialog = defineAsyncComponent(() => import("@/components/grid/DataGridInsertRowsDialog.vue"));
 const ExportProgressDialog = defineAsyncComponent(() => import("@/components/export/ExportProgressDialog.vue"));
 const FORMATTED_JSON_EDIT_WARNING_COUNT_STORAGE_KEY = "dbx-cell-detail-formatted-json-edit-warning-count";
@@ -1007,6 +1008,10 @@ const imagePreviewSrc = ref("");
 const imagePreviewTitle = ref("");
 const bulkEditDialogMounted = useDataGridAsyncSurface(bulkEditDialogOpen);
 const copyColumnNamesDialogMounted = useDataGridAsyncSurface(copyColumnNamesDialogOpen);
+const groupByDialogOpen = ref(false);
+const groupByDialogColumn = ref("");
+const groupByDialogSql = ref("");
+const groupByDialogMounted = useDataGridAsyncSurface(groupByDialogOpen);
 const insertRowsDialogMounted = useDataGridAsyncSurface(insertRowsDialogOpen);
 const cellDetailDialogMounted = useDataGridAsyncSurface(cellDetailDialogOpen);
 const detailDialogsMounted = useDataGridAsyncSurface(computed(() => rowDetailDialogOpen.value || columnDetailDialogOpen.value));
@@ -10093,6 +10098,30 @@ async function copyAlterColumnSql() {
     toast(t("grid.copyAlterSqlFailed", { message: e?.message || String(e) }), 5000);
   }
 }
+const canGroupByHeaderColumn = computed(() => {
+  if (!contextHeaderColumn.value || !canUseServerColumnFilter.value || resolvedDatabaseType.value === "neo4j") return false;
+  return props.tableMeta!.columns.some((c) => c.name === contextHeaderColumn.value);
+});
+
+function openGroupByDialog() {
+  const tableMeta = props.tableMeta;
+  const colName = contextHeaderColumn.value;
+  if (!tableMeta || !colName || !props.connectionId) return;
+  const table = qualifiedTableName({
+    databaseType: resolvedDatabaseType.value,
+    driverProfile: connectionStore.getConfig(props.connectionId)?.driver_profile,
+    identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
+    catalog: tableMeta.catalog,
+    database: tableMeta.database,
+    schema: tableMeta.schema,
+    tableName: tableMeta.tableName,
+  });
+  const column = queryColumnRef(colName);
+  groupByDialogColumn.value = colName;
+  groupByDialogSql.value = `SELECT ${column}, COUNT(*) AS cnt FROM ${table} GROUP BY ${column} ORDER BY 2 DESC`;
+  groupByDialogOpen.value = true;
+}
+
 function clearNativeTextSelection() {
   window.getSelection()?.removeAllRanges();
 }
@@ -11633,6 +11662,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
       headerColumn: !!contextHeaderColumn.value,
       contextColumn: !!contextColumn.value,
       canCopyAlterSql: canCopyAlterColumnSql.value,
+      canGroupBy: canGroupByHeaderColumn.value,
       canFilter: canUseWhereSearch.value,
       hasSort: !!sortCol.value,
       sortMode: sortMode.value,
@@ -11653,6 +11683,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         copyNames: t("grid.copyColumnNames"),
         details: t("grid.openColumnDetailsDialog"),
         copyAlterSql: t("grid.copyAlterColumnSql"),
+        groupBy: t("grid.groupByColumnValues"),
         databaseAscending: t("grid.sortDatabaseAscending"),
         databaseDescending: t("grid.sortDatabaseDescending"),
         localAscending: t("grid.sortCurrentPageAscending"),
@@ -11678,6 +11709,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         copyNames: openCopyAllColumnNamesDialog,
         details: openContextColumnDetailDialog,
         copyAlterSql: copyAlterColumnSql,
+        groupBy: openGroupByDialog,
         sort: applyContextSort,
         freezeToColumn: () => {
           const idx = contextHeaderVisibleColIdx.value;
@@ -13838,6 +13870,15 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 
     <DataGridExtractorDialog v-model:open="extractorConfigOpen" :preference="selectedCopyPreference" :options="settingsStore.editorSettings.dataGridExtractorOptions" :items="copyPreferenceMenuItems" :preview="previewWithPreference" @save="saveExtractorConfiguration" />
     <DataGridCopyColumnNamesDialog v-if="copyColumnNamesDialogMounted" v-model:open="copyColumnNamesDialogOpen" :column-names="copyColumnNamesDialogColumns" :database-type="resolvedDatabaseType" :column-comments="columnCommentMap" @copy="copyText" />
+    <DataGridGroupByDialog
+      v-if="groupByDialogMounted && connectionId"
+      v-model:open="groupByDialogOpen"
+      :column-name="groupByDialogColumn"
+      :sql="groupByDialogSql"
+      :connection-id="connectionId"
+      :database="executionDatabase ?? database ?? ''"
+      :schema="context === 'table-data' ? undefined : (tableMeta?.schema ?? schema)"
+    />
     <GridSnapshotDialog v-model:open="gridSnapshotOpen" :source="gridSnapshotSource" />
 
     <Dialog v-model:open="esDeepPageJumpConfirmOpen">
