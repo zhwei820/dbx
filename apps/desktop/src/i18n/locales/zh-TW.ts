@@ -2480,6 +2480,9 @@ export default withEnglishFallback({
     columnCopied: "已複製 {count} 個值",
     copiedWithHeaders: "已複製（含欄名）",
     copyFailed: "複製失敗：{message}",
+    undo: "復原",
+    redo: "重做",
+    editFailed: "編輯失敗：{message}",
     menu: {
       copy: "複製選項",
       copyColumn: "複製欄",

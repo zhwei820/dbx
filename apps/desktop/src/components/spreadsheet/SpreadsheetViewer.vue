@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
-import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, RefreshCw, Save, Trash2 } from "@lucide/vue";
-import type { ColumnRegular } from "@revolist/revogrid";
+import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, Redo2, RefreshCw, Save, Trash2, Undo2 } from "@lucide/vue";
+import type { BeforeRangeSaveDataDetails, BeforeSaveDataDetails, ColumnRegular } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,10 @@ import { useToast } from "@/composables/useToast";
 import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { copyToClipboard } from "@/lib/common/clipboard";
+import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import {
   buildSpreadsheetGrid,
+  captureSpreadsheetColumns,
   columnClipboardText,
   defaultCsvSavePath,
   deleteColumnsSplice,
@@ -31,6 +33,7 @@ import {
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
 } from "@/lib/spreadsheet/spreadsheetGrid";
+import { applySpreadsheetCellChanges, applySpreadsheetRowPatch, diffSpreadsheetRows, invertColumnSplice, type SpreadsheetCellChange, type SpreadsheetChange, SpreadsheetHistory, type SpreadsheetHistoryDirection } from "@/lib/spreadsheet/spreadsheetHistory";
 import SpreadsheetInsertDialog, { type SpreadsheetInsertPosition } from "@/components/spreadsheet/SpreadsheetInsertDialog.vue";
 import { useSettingsStore } from "@/stores/settingsStore";
 
@@ -48,7 +51,10 @@ const headers = ref<string[]>([]);
 const grid = ref(buildSpreadsheetGrid([], []));
 const gridRef = ref<{ $el: HTMLRevoGridElement }>();
 const truncated = ref(false);
-const dirty = ref(false);
+const history = new SpreadsheetHistory<SpreadsheetChange>();
+// The history object is not reactive; this mirrors what the toolbar and unsaved marker need.
+const historyState = ref({ canUndo: false, canRedo: false, dirty: false });
+const dirty = computed(() => historyState.value.dirty);
 const saving = ref(false);
 const fileType = ref("");
 let loadGeneration = 0;
@@ -74,7 +80,9 @@ async function load(sheetName?: string) {
     headerSelectionAnchor = -1;
     rowSelectionAnchor = -1;
     grid.value = buildSpreadsheetGrid(preview.columns, preview.rows);
-    dirty.value = false;
+    pendingCells = [];
+    history.reset();
+    syncHistory();
     truncated.value = preview.rows.length >= SPREADSHEET_VIEWER_MAX_ROWS;
   } catch (e: any) {
     if (generation !== loadGeneration) return;
@@ -112,6 +120,8 @@ async function saveAsCsv() {
       if (!path) return;
       outputPath = path;
     }
+    // Edits made while the file is being written are not part of it.
+    const savedState = history.stateId;
     // getSource is the unsorted, unfiltered backing data, including in-grid edits.
     const source = ((await gridRef.value?.$el.getSource()) ?? grid.value.source) as Record<string, unknown>[];
     const width = grid.value.columns.length;
@@ -121,13 +131,98 @@ async function saveAsCsv() {
       spreadsheetSourceToRows(source, width),
       useSettingsStore().editorSettings.csvQuoteMode,
     );
-    dirty.value = false;
+    history.markSaved(savedState);
+    syncHistory();
     toast(t("spreadsheet.saved", { path: outputPath }), 3000);
   } catch (e: any) {
     toast(t("spreadsheet.saveFailed", { message: e?.message || String(e) }), 5000);
   } finally {
     saving.value = false;
   }
+}
+
+function syncHistory() {
+  historyState.value = { canUndo: history.canUndo, canRedo: history.canRedo, dirty: history.dirty };
+}
+
+function recordChange(change: SpreadsheetChange) {
+  history.push(change);
+  syncHistory();
+}
+
+// Edits, their recording and undo/redo all read and then replace the grid source, so they run one at a time.
+let editQueue: Promise<void> = Promise.resolve();
+
+function runEdit(task: () => Promise<void>) {
+  editQueue = editQueue.then(task).catch((e: any) => toast(t("spreadsheet.editFailed", { message: e?.message || String(e) }), 5000));
+}
+
+// RevoGrid writes edits straight into the records, so old values are captured before it does and recorded after.
+let pendingCells: { model: SpreadsheetRecord; prop: string; before: unknown }[] = [];
+
+function onBeforeEdit(event: CustomEvent<BeforeSaveDataDetails>) {
+  const { model, prop } = event.detail;
+  pendingCells = [{ model, prop: String(prop), before: model[prop] }];
+}
+
+// Paste, autofill and clearing a range all arrive here, keyed by viewport row with the matching records.
+function onBeforeRangeEdit(event: CustomEvent<BeforeRangeSaveDataDetails>) {
+  const { data, models } = event.detail;
+  pendingCells = [];
+  for (const [rowIndex, values] of Object.entries(data)) {
+    const model = models[Number(rowIndex)];
+    if (!model) continue;
+    for (const prop of Object.keys(values)) pendingCells.push({ model, prop, before: model[prop] });
+  }
+}
+
+function onAfterEdit() {
+  const captured = pendingCells;
+  pendingCells = [];
+  if (captured.length === 0) return;
+  runEdit(async () => {
+    const source = await currentSource();
+    const positions = captured.length > 1 ? new Map(source.map((record, index) => [record, index])) : undefined;
+    const cells = captured.flatMap(({ model, prop, before }): SpreadsheetCellChange[] => {
+      const row = positions ? positions.get(model) : source.indexOf(model);
+      const after = model[prop];
+      return row === undefined || row < 0 || Object.is(before, after) ? [] : [{ row, prop, before, after }];
+    });
+    if (cells.length > 0) recordChange({ kind: "cells", cells });
+  });
+}
+
+function stepHistory(direction: SpreadsheetHistoryDirection) {
+  runEdit(async () => {
+    if (loading.value) return;
+    const change = direction === "undo" ? history.undo() : history.redo();
+    syncHistory();
+    if (!change) return;
+    if (change.kind === "cells") {
+      await replayCells(change.cells, direction);
+    } else if (change.kind === "rows") {
+      const next = applySpreadsheetRowPatch(await currentSource(), change.patch, direction);
+      await replaceRows(next.source, next.restored);
+    } else {
+      await applyColumnSplice(direction === "undo" ? invertColumnSplice(change.splice, change.removed) : change.splice, false);
+    }
+  });
+}
+
+async function replayCells(cells: readonly SpreadsheetCellChange[], direction: SpreadsheetHistoryDirection) {
+  const source = await currentSource();
+  applySpreadsheetCellChanges(source, cells, direction);
+  const element = gridElement();
+  if (!element) return;
+  await element.refresh("rgRow");
+  // Select the restored cells so the change is visible, as long as the filter still shows them.
+  const visible = new Map((await element.getVisibleSource()).map((record, index) => [record, index]));
+  const rows = cells.map((cell) => visible.get(source[cell.row])).filter((row): row is number => row !== undefined);
+  const columns = cells.map((cell) => grid.value.columns.findIndex((column) => column.prop === cell.prop)).filter((column) => column >= 0);
+  if (rows.length === 0 || columns.length === 0) return;
+  const start = { x: Math.min(...columns), y: Math.min(...rows) };
+  await element.setCellsFocus(start, { x: Math.max(...columns), y: Math.max(...rows) }, "rgCol", "rgRow");
+  await element.scrollToCoordinate(start);
 }
 
 // Columns are never reordered or pinned, so a header's viewport index is also its physical index.
@@ -197,7 +292,6 @@ function resetSelectionAnchors() {
 
 async function replaceRows(source: SpreadsheetRecord[], focus: SpreadsheetRecord[] = []) {
   grid.value = { columns: grid.value.columns, source };
-  dirty.value = true;
   resetSelectionAnchors();
   await nextTick();
   const element = gridElement();
@@ -211,33 +305,42 @@ async function replaceRows(source: SpreadsheetRecord[], focus: SpreadsheetRecord
   if (rows.length > 0) await selectRows(Math.min(...rows), Math.max(...rows));
 }
 
+async function commitRows(before: SpreadsheetRecord[], after: SpreadsheetRecord[], focus: SpreadsheetRecord[] = []) {
+  const patch = diffSpreadsheetRows(before, after);
+  if (patch.removed.length === 0 && patch.inserted.length === 0) return;
+  recordChange({ kind: "rows", patch });
+  await replaceRows(after, focus);
+}
+
 async function insertRows(target: Extract<MenuTarget, { kind: "row" }> | undefined, count: number, position: SpreadsheetInsertPosition) {
   const source = await currentSource();
   const width = grid.value.columns.length;
   // Without a row target (empty sheet) rows are appended.
   const at = !target || target.physical.length === 0 ? source.length : position === "before" ? Math.min(...target.physical) : Math.max(...target.physical) + 1;
   const next = insertSpreadsheetRows(source, at, count, width);
-  await replaceRows(next, next.slice(at, at + count));
+  await commitRows(source, next, next.slice(at, at + count));
 }
 
 async function duplicateRows(target: Extract<MenuTarget, { kind: "row" }>) {
-  const result = duplicateSpreadsheetRows(await currentSource(), target.physical);
-  await replaceRows(result.source, result.source.slice(result.at, result.at + result.count));
+  const source = await currentSource();
+  const result = duplicateSpreadsheetRows(source, target.physical);
+  await commitRows(source, result.source, result.source.slice(result.at, result.at + result.count));
 }
 
 async function deleteRows(target: Extract<MenuTarget, { kind: "row" }>) {
-  await replaceRows(deleteSpreadsheetRows(await currentSource(), target.physical));
+  const source = await currentSource();
+  await commitRows(source, deleteSpreadsheetRows(source, target.physical));
 }
 
-async function applyColumnSplice(splice: SpreadsheetColumnSplice, focus?: { start: number; end: number }) {
+// Undo and redo replay splices without recording them again.
+async function applyColumnSplice(splice: SpreadsheetColumnSplice, record = true) {
   const element = gridElement();
   const width = grid.value.columns.length;
-  const next = spliceSpreadsheetColumns({ headers: headers.value, source: await currentSource(), width }, splice);
-  const sizes = spliceSpreadsheetColumnList(
-    grid.value.columns.map((column) => column.size),
-    splice,
-    undefined,
-  );
+  const table = { headers: headers.value, source: await currentSource(), width };
+  const currentSizes = grid.value.columns.map((column) => column.size);
+  if (record) recordChange({ kind: "columns", splice, removed: captureSpreadsheetColumns(table, currentSizes, splice.at, splice.remove) });
+  const next = spliceSpreadsheetColumns(table, splice);
+  const sizes = spliceSpreadsheetColumnList(currentSizes, splice, undefined, (column) => column.size);
   // Sort and filter state is keyed by the positional prop, so it would jump to whichever column now owns it.
   if (activeSort.value) {
     activeSort.value = undefined;
@@ -246,25 +349,24 @@ async function applyColumnSplice(splice: SpreadsheetColumnSplice, focus?: { star
   await clearAllFilters();
   headers.value = next.headers;
   grid.value = { columns: spreadsheetColumns(next.headers, next.width, sizes), source: next.source };
-  dirty.value = true;
   resetSelectionAnchors();
   await nextTick();
-  if (focus && next.width > 0) await selectColumns(focus.start, Math.min(focus.end, next.width - 1));
+  // Whatever the splice inserted (new, duplicated or restored columns) ends up selected.
+  if (splice.insert.length > 0 && next.width > 0) await selectColumns(splice.at, Math.min(splice.at + splice.insert.length - 1, next.width - 1));
   else await element?.clearFocus();
 }
 
 function insertColumns(target: Extract<MenuTarget, { kind: "column" }>, count: number, position: SpreadsheetInsertPosition) {
   const at = position === "before" ? target.start : target.end + 1;
-  void applyColumnSplice(insertColumnsSplice(at, count), { start: at, end: at + count - 1 });
+  runEdit(() => applyColumnSplice(insertColumnsSplice(at, count)));
 }
 
 function duplicateColumns(target: Extract<MenuTarget, { kind: "column" }>) {
-  const count = target.end - target.start + 1;
-  void applyColumnSplice(duplicateColumnsSplice(target.start, target.end), { start: target.end + 1, end: target.end + count });
+  runEdit(() => applyColumnSplice(duplicateColumnsSplice(target.start, target.end)));
 }
 
 function deleteColumns(target: Extract<MenuTarget, { kind: "column" }>) {
-  void applyColumnSplice(deleteColumnsSplice(target.start, target.end));
+  runEdit(() => applyColumnSplice(deleteColumnsSplice(target.start, target.end)));
 }
 
 const insertDialog = ref<{ open: boolean; kind: "rows" | "columns"; count: number; target?: MenuTarget }>({ open: false, kind: "rows", count: 1 });
@@ -277,7 +379,7 @@ function openInsertDialog(target: MenuTarget) {
 function onInsertDialogConfirm(count: number, position: SpreadsheetInsertPosition) {
   const target = insertDialog.value.target;
   if (target?.kind === "column") insertColumns(target, count, position);
-  else void insertRows(target, count, position);
+  else runEdit(() => insertRows(target, count, position));
 }
 
 async function copyColumn(index: number, withHeader: boolean) {
@@ -415,10 +517,16 @@ async function selectAllCells() {
 
 // Plain Mod+C keeps RevoGrid's paste-friendly copy; Mod+Shift+C adds the column names.
 // Mod+A is handled here because RevoGrid only selects all when a multi-cell range already exists.
+// Mod+Z / Mod+Shift+Z / Ctrl+Y step the sheet history; inside an open cell editor they stay native text undo.
 function onGridKeydown(event: KeyboardEvent) {
   if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
   if (event.target instanceof Element && event.target.closest("input, textarea, [contenteditable='true']")) return;
-  if (event.code === "KeyC" && event.shiftKey) {
+  const key = event.key.toLowerCase();
+  if (key === "z" || (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey)) {
+    event.preventDefault();
+    event.stopPropagation();
+    stepHistory(key === "z" && !event.shiftKey ? "undo" : "redo");
+  } else if (event.code === "KeyC" && event.shiftKey) {
     event.preventDefault();
     event.stopPropagation();
     void copySelectionWithHeaders();
@@ -439,12 +547,12 @@ function rowMenuItems(target: Extract<MenuTarget, { kind: "row" }>): ContextMenu
   const count = target.physical.length;
   if (count === 0) return [];
   return [
-    { label: t("spreadsheet.menu.insertRowsAbove", { count }, count), icon: ArrowUpToLine, action: () => void insertRows(target, count, "before") },
-    { label: t("spreadsheet.menu.insertRowsBelow", { count }, count), icon: ArrowDownToLine, action: () => void insertRows(target, count, "after") },
+    { label: t("spreadsheet.menu.insertRowsAbove", { count }, count), icon: ArrowUpToLine, action: () => runEdit(() => insertRows(target, count, "before")) },
+    { label: t("spreadsheet.menu.insertRowsBelow", { count }, count), icon: ArrowDownToLine, action: () => runEdit(() => insertRows(target, count, "after")) },
     { label: t("spreadsheet.menu.insertRowsMultiple"), icon: ListPlus, action: () => openInsertDialog(target) },
-    { label: t("spreadsheet.menu.duplicateRows", { count }, count), icon: CopyPlus, action: () => void duplicateRows(target) },
+    { label: t("spreadsheet.menu.duplicateRows", { count }, count), icon: CopyPlus, action: () => runEdit(() => duplicateRows(target)) },
     { label: "", separator: true },
-    { label: t("spreadsheet.menu.deleteRows", { count }, count), icon: Trash2, variant: "destructive", action: () => void deleteRows(target) },
+    { label: t("spreadsheet.menu.deleteRows", { count }, count), icon: Trash2, variant: "destructive", action: () => runEdit(() => deleteRows(target)) },
   ];
 }
 
@@ -462,7 +570,7 @@ function columnMenuItems(target: Extract<MenuTarget, { kind: "column" }>): Conte
     { label: t("spreadsheet.menu.deleteColumns", { count }, count), icon: Trash2, variant: "destructive", disabled: count >= grid.value.columns.length, action: () => deleteColumns(target) },
   ];
   // An empty sheet has no row numbers to right-click, so offer the first row here.
-  if (grid.value.source.length === 0) structure.push({ label: t("spreadsheet.menu.appendRow"), icon: ListPlus, action: () => void insertRows(undefined, 1, "after") });
+  if (grid.value.source.length === 0) structure.push({ label: t("spreadsheet.menu.appendRow"), icon: ListPlus, action: () => runEdit(() => insertRows(undefined, 1, "after")) });
   return [...headerColumnItems(index), ...structure];
 }
 
@@ -509,7 +617,13 @@ defineExpose({ refresh });
       <span class="shrink-0">· {{ t("spreadsheet.rowCount", { count: grid.source.length }) }}</span>
       <span v-if="truncated" class="shrink-0 text-amber-600 dark:text-amber-400">{{ t("spreadsheet.truncated", { max: SPREADSHEET_VIEWER_MAX_ROWS }) }}</span>
       <span v-if="dirty" class="shrink-0 text-amber-600 dark:text-amber-400">· {{ t("spreadsheet.unsaved") }}</span>
-      <Button variant="ghost" size="sm" class="ml-auto h-7 gap-1 px-2 text-xs" :title="truncated ? t('spreadsheet.saveDisabledTruncated') : t('spreadsheet.saveAsCsv')" :disabled="loading || saving || truncated || !!error" @click="saveAsCsv">
+      <Button variant="ghost" size="icon" class="ml-auto h-7 w-7" :title="`${t('spreadsheet.undo')} (${formatShortcutDisplay('Mod+Z')})`" :aria-label="t('spreadsheet.undo')" :disabled="loading || !historyState.canUndo" @click="stepHistory('undo')">
+        <Undo2 class="h-3.5 w-3.5" />
+      </Button>
+      <Button variant="ghost" size="icon" class="h-7 w-7" :title="`${t('spreadsheet.redo')} (${formatShortcutDisplay('Mod+Shift+Z')})`" :aria-label="t('spreadsheet.redo')" :disabled="loading || !historyState.canRedo" @click="stepHistory('redo')">
+        <Redo2 class="h-3.5 w-3.5" />
+      </Button>
+      <Button variant="ghost" size="sm" class="h-7 gap-1 px-2 text-xs" :title="truncated ? t('spreadsheet.saveDisabledTruncated') : t('spreadsheet.saveAsCsv')" :disabled="loading || saving || truncated || !!error" @click="saveAsCsv">
         <Loader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
         <Save v-else class="h-3.5 w-3.5" />
         {{ t("spreadsheet.saveAsCsv") }}
@@ -538,7 +652,9 @@ defineExpose({ refresh });
             :filter="true"
             :row-headers="true"
             :can-focus="true"
-            @afteredit="dirty = true"
+            @beforeedit="onBeforeEdit"
+            @beforerangeedit="onBeforeRangeEdit"
+            @afteredit="onAfterEdit"
             @headerclick="onHeaderClick"
             @clipboardrangecopy="onClipboardRangeCopy"
           />

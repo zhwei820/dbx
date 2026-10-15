@@ -2581,6 +2581,9 @@ export default {
     columnCopied: "Copied {count} values",
     copiedWithHeaders: "Copied with column names",
     copyFailed: "Copy failed: {message}",
+    undo: "Undo",
+    redo: "Redo",
+    editFailed: "Edit failed: {message}",
     menu: {
       copy: "Copy options",
       copyColumn: "Copy column",

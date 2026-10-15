@@ -2495,6 +2495,9 @@ export default withEnglishFallback({
     columnCopied: "已复制 {count} 个值",
     copiedWithHeaders: "已复制（含列名）",
     copyFailed: "复制失败：{message}",
+    undo: "撤销",
+    redo: "重做",
+    editFailed: "编辑失败：{message}",
     menu: {
       copy: "复制选项",
       copyColumn: "复制列",

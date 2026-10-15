@@ -116,15 +116,22 @@ export function deleteSpreadsheetRows(source: readonly SpreadsheetRecord[], indi
   return source.filter((_, index) => !removed.has(index));
 }
 
-// Removes `remove` columns at `at`, then inserts one column per `insert` entry: a source column index to copy, or null for an empty column.
+// A column captured with its contents, so a removed column can be put back.
+export interface SpreadsheetColumnData {
+  header: string;
+  size?: number;
+  values: readonly unknown[];
+}
+
+// Removes `remove` columns at `at`, then inserts one column per `insert` entry: a source column index to copy, null for an empty column, or captured column data.
 export interface SpreadsheetColumnSplice {
   at: number;
   remove: number;
-  insert: readonly (number | null)[];
+  insert: readonly (number | null | SpreadsheetColumnData)[];
 }
 
-export function spliceSpreadsheetColumnList<T>(items: readonly T[], splice: SpreadsheetColumnSplice, empty: T): T[] {
-  const inserted = splice.insert.map((index) => (index === null ? empty : (items[index] ?? empty)));
+export function spliceSpreadsheetColumnList<T>(items: readonly T[], splice: SpreadsheetColumnSplice, empty: T, restore: (column: SpreadsheetColumnData) => T = () => empty): T[] {
+  const inserted = splice.insert.map((entry) => (entry === null ? empty : typeof entry === "number" ? (items[entry] ?? empty) : restore(entry)));
   const next = [...items];
   next.splice(splice.at, splice.remove, ...inserted);
   return next;
@@ -141,13 +148,15 @@ export function spliceSpreadsheetColumns(table: SpreadsheetTable, splice: Spread
     Array.from({ length: table.width }, (_, index) => table.headers[index] ?? ""),
     splice,
     "",
+    (column) => column.header,
   );
   const width = headers.length;
-  const source = table.source.map((record) => {
+  const source = table.source.map((record, row) => {
     const cells = spliceSpreadsheetColumnList(
       Array.from({ length: table.width }, (_, index) => record[`c${index}`] ?? ""),
       splice,
       "" as unknown,
+      (column) => column.values[row] ?? "",
     );
     const next: SpreadsheetRecord = {};
     for (let index = 0; index < width; index++) next[`c${index}`] = cells[index];
@@ -166,4 +175,11 @@ export function duplicateColumnsSplice(start: number, end: number): SpreadsheetC
 
 export function deleteColumnsSplice(start: number, end: number): SpreadsheetColumnSplice {
   return { at: start, remove: end - start + 1, insert: [] };
+}
+
+export function captureSpreadsheetColumns(table: SpreadsheetTable, sizes: readonly (number | undefined)[], at: number, count: number): SpreadsheetColumnData[] {
+  return Array.from({ length: Math.max(0, Math.min(count, table.width - at)) }, (_, offset) => {
+    const prop = `c${at + offset}`;
+    return { header: table.headers[at + offset] ?? "", size: sizes[at + offset], values: table.source.map((record) => record[prop] ?? "") };
+  });
 }
