@@ -239,3 +239,58 @@ export function spreadsheetMatchFrom(matches: readonly SpreadsheetCell[], cursor
   }
   return matches.length - 1;
 }
+
+// Reads tab-separated clipboard text, including the quoted fields that tableClipboardText and Excel write
+// for values containing tabs, line breaks or quotes.
+export function parseSpreadsheetClipboard(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quoted) {
+      if (char !== '"') field += char;
+      else if (text[index + 1] === '"') field += text[++index];
+      else quoted = false;
+    } else if (char === '"' && field === "") {
+      quoted = true;
+    } else if (char === "\t") {
+      row.push(field);
+      field = "";
+    } else if (char === "\r" || char === "\n") {
+      if (char === "\r" && text[index + 1] === "\n") index++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+  // A trailing line break does not start another row.
+  if (field !== "" || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+// Excel-style paste: a selection the copied block tiles evenly is filled with repeats of it, so one copied value
+// fills every selected cell; otherwise the block is pasted once from the selection's top-left corner.
+// Cells past the last row or column are dropped.
+export function spreadsheetPasteCells(clip: readonly (readonly string[])[], range: GridRange, rowCount: number, columnCount: number): (SpreadsheetCell & { value: string })[] {
+  const height = clip.length;
+  const width = Math.max(0, ...clip.map((row) => row.length));
+  if (height === 0 || width === 0) return [];
+  const rangeHeight = range.y1 - range.y + 1;
+  const rangeWidth = range.x1 - range.x + 1;
+  const tiles = rangeHeight % height === 0 && rangeWidth % width === 0;
+  const cells: (SpreadsheetCell & { value: string })[] = [];
+  for (let dy = 0; dy < (tiles ? rangeHeight : height) && range.y + dy < rowCount; dy++) {
+    for (let dx = 0; dx < (tiles ? rangeWidth : width) && range.x + dx < columnCount; dx++) {
+      cells.push({ x: range.x + dx, y: range.y + dy, value: clip[dy % height][dx % width] ?? "" });
+    }
+  }
+  return cells;
+}

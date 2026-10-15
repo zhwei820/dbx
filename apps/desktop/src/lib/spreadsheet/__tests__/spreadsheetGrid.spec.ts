@@ -11,6 +11,7 @@ import {
   findSpreadsheetMatches,
   insertColumnsSplice,
   insertSpreadsheetRows,
+  parseSpreadsheetClipboard,
   rangeClipboardText,
   renameSpreadsheetHeader,
   spliceSpreadsheetColumnList,
@@ -18,6 +19,7 @@ import {
   spreadsheetColumnName,
   spreadsheetColumns,
   spreadsheetMatchFrom,
+  spreadsheetPasteCells,
   spreadsheetSourceToRows,
 } from "../spreadsheetGrid";
 
@@ -233,5 +235,31 @@ describe("spreadsheet search", () => {
     expect(spreadsheetMatchFrom(matches, { x: 1, y: 1 }, -1)).toBe(0);
     expect(spreadsheetMatchFrom(matches, { x: 0, y: 0 }, -1)).toBe(2);
     expect(spreadsheetMatchFrom([], { x: 0, y: 0 }, 1)).toBe(-1);
+  });
+});
+
+describe("spreadsheet paste", () => {
+  it("parses tab-separated text with quoted fields", () => {
+    expect(parseSpreadsheetClipboard("word")).toEqual([["word"]]);
+    expect(parseSpreadsheetClipboard("a\tb\r\nc\td\n")).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(parseSpreadsheetClipboard('"x\ty"\t"say ""hi"""\n"line\nbreak"')).toEqual([["x\ty", 'say "hi"'], ["line\nbreak"]]);
+    expect(parseSpreadsheetClipboard("")).toEqual([]);
+  });
+
+  it("fills every selected cell with a single copied value", () => {
+    const cells = spreadsheetPasteCells([["word"]], { x: 1, y: 0, x1: 1, y1: 3 }, 10, 3);
+    expect(cells).toEqual([0, 1, 2, 3].map((y) => ({ x: 1, y, value: "word" })));
+  });
+
+  it("repeats a block that tiles the selection and pastes it once otherwise", () => {
+    expect(spreadsheetPasteCells([["a"], ["b"]], { x: 0, y: 0, x1: 0, y1: 3 }, 10, 3).map((cell) => cell.value)).toEqual(["a", "b", "a", "b"]);
+    expect(spreadsheetPasteCells([["a"], ["b"]], { x: 0, y: 0, x1: 0, y1: 2 }, 10, 3).map((cell) => cell.value)).toEqual(["a", "b"]);
+  });
+
+  it("drops cells past the sheet edge", () => {
+    expect(spreadsheetPasteCells([["a", "b"]], { x: 2, y: 4, x1: 2, y1: 4 }, 5, 3)).toEqual([{ x: 2, y: 4, value: "a" }]);
   });
 });

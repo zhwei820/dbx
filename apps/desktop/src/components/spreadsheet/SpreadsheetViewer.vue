@@ -12,7 +12,7 @@ import { useToast } from "@/composables/useToast";
 import { useVerticalOverlayScrollbar } from "@/composables/useVerticalOverlayScrollbar";
 import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
-import { copyToClipboard } from "@/lib/common/clipboard";
+import { copyToClipboard, readTextFromClipboard } from "@/lib/common/clipboard";
 import { textContentSearchStatus } from "@/lib/common/textContentSearch";
 import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import {
@@ -29,6 +29,7 @@ import {
   type GridRange,
   insertColumnsSplice,
   insertSpreadsheetRows,
+  parseSpreadsheetClipboard,
   rangeClipboardText,
   renameSpreadsheetHeader,
   type SpreadsheetColumnSplice,
@@ -40,6 +41,7 @@ import {
   spreadsheetColumnName,
   spreadsheetColumns,
   spreadsheetMatchFrom,
+  spreadsheetPasteCells,
   SPREADSHEET_SEARCH_MATCH_LIMIT,
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
@@ -588,20 +590,50 @@ function onGridKeydown(event: KeyboardEvent) {
 
 const viewerRef = ref<HTMLElement>();
 
-// RevoGrid copies through the native copy event, which WebKit (the macOS and Linux webviews) only fires when the
-// page has a text selection, so Mod+C on selected cells copied nothing there. Mod+C copies the cells here instead;
-// Mod+Shift+C adds the column names. Listening on the document also covers focus left on the body or find field.
+// RevoGrid copies and pastes through the native clipboard events, which WebKit (the macOS and Linux webviews) only
+// fires for a text selection or an editable field, so Mod+C and Mod+V on selected cells did nothing there. Both are
+// handled here instead; Mod+Shift+C adds the column names. Listening on the document also covers focus left on the
+// body or the find field.
 function onDocumentKeydown(event: KeyboardEvent) {
-  if (event.code !== "KeyC" || !(event.metaKey || event.ctrlKey) || event.altKey || event.defaultPrevented) return;
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.defaultPrevented) return;
+  const isCopy = event.code === "KeyC";
+  const isPaste = event.code === "KeyV" && !event.shiftKey;
+  if (!isCopy && !isPaste) return;
   const target = event.target instanceof Element ? event.target : null;
   const onPage = !target || target === document.body || target === document.documentElement;
   if (!onPage && !viewerRef.value?.contains(target)) return;
-  // An open cell editor and any selected text keep the native copy.
-  if (target?.closest("input, textarea, [contenteditable='true']") && gridElement()?.contains(target)) return;
-  if (hasTextSelection(target)) return;
+  // An open cell editor keeps the native clipboard, as does pasting into the find field or copying selected text.
+  if (target?.closest("input, textarea, [contenteditable='true']") && (isPaste || gridElement()?.contains(target))) return;
+  if (isCopy && hasTextSelection(target)) return;
   event.preventDefault();
   event.stopPropagation();
-  void copySelection(event.shiftKey);
+  if (isCopy) void copySelection(event.shiftKey);
+  else runEdit(pasteIntoSelection);
+}
+
+async function pasteIntoSelection() {
+  const element = gridElement();
+  if (!element || loading.value) return;
+  const clip = parseSpreadsheetClipboard(await readTextFromClipboard());
+  const focused = await element.getFocused();
+  const range: GridRange | null = (await element.getSelectedRange()) ?? (focused ? { x: focused.cell.x, y: focused.cell.y, x1: focused.cell.x, y1: focused.cell.y } : null);
+  if (!range) return;
+  // Selection rows are viewport rows; the change is recorded against the records' physical positions.
+  const visible = await element.getVisibleSource();
+  const source = await currentSource();
+  const positions = new Map(source.map((record, index) => [record, index]));
+  const columns = grid.value.columns;
+  const cells = spreadsheetPasteCells(clip, range, visible.length, columns.length).flatMap(({ x, y, value }): SpreadsheetCellChange[] => {
+    const row = positions.get(visible[y]);
+    const prop = String(columns[x].prop);
+    if (row === undefined) return [];
+    const before = source[row][prop];
+    return Object.is(before, value) ? [] : [{ row, prop, before, after: value }];
+  });
+  if (cells.length === 0) return;
+  recordChange({ kind: "cells", cells });
+  await replayCells(cells, "redo");
+  onGridDataChanged();
 }
 
 function hasTextSelection(target: Element | null) {
