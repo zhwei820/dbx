@@ -8,6 +8,7 @@ import {
   deleteSpreadsheetRows,
   duplicateColumnsSplice,
   duplicateSpreadsheetRows,
+  findSpreadsheetMatches,
   insertColumnsSplice,
   insertSpreadsheetRows,
   rangeClipboardText,
@@ -16,6 +17,7 @@ import {
   spliceSpreadsheetColumns,
   spreadsheetColumnName,
   spreadsheetColumns,
+  spreadsheetMatchFrom,
   spreadsheetSourceToRows,
 } from "../spreadsheetGrid";
 
@@ -188,5 +190,48 @@ describe("spreadsheet column editing", () => {
       ["c1", "B", 140],
       ["c2", "C", 140],
     ]);
+  });
+});
+
+describe("spreadsheet search", () => {
+  const rows = [
+    { c0: "Alpha", c1: 10 },
+    { c0: "beta", c1: "ALPHABET" },
+    { c0: "", c1: null },
+    { c0: "gamma", c1: "alp" },
+  ];
+
+  it("finds case-insensitive matches row by row", () => {
+    expect(findSpreadsheetMatches(rows, ["c0", "c1"], "ALP")).toEqual([
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+      { x: 1, y: 3 },
+    ]);
+    expect(findSpreadsheetMatches(rows, ["c0", "c1"], "10")).toEqual([{ x: 1, y: 0 }]);
+    expect(findSpreadsheetMatches(rows, ["c0", "c1"], "")).toEqual([]);
+  });
+
+  it("stops at the match limit", () => {
+    expect(findSpreadsheetMatches(rows, ["c0", "c1"], "a", 2)).toEqual([
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+    ]);
+  });
+
+  it("steps from the cursor and wraps around", () => {
+    const matches = [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+      { x: 1, y: 3 },
+    ];
+    expect(spreadsheetMatchFrom(matches, undefined, 1)).toBe(0);
+    expect(spreadsheetMatchFrom(matches, undefined, -1)).toBe(2);
+    expect(spreadsheetMatchFrom(matches, { x: 1, y: 1 }, 1)).toBe(2);
+    expect(spreadsheetMatchFrom(matches, { x: 1, y: 1 }, 1, true)).toBe(1);
+    expect(spreadsheetMatchFrom(matches, { x: 0, y: 2 }, 1)).toBe(2);
+    expect(spreadsheetMatchFrom(matches, { x: 1, y: 3 }, 1)).toBe(0);
+    expect(spreadsheetMatchFrom(matches, { x: 1, y: 1 }, -1)).toBe(0);
+    expect(spreadsheetMatchFrom(matches, { x: 0, y: 0 }, -1)).toBe(2);
+    expect(spreadsheetMatchFrom([], { x: 0, y: 0 }, 1)).toBe(-1);
   });
 });

@@ -331,7 +331,7 @@ const consulWorkspaceRef = ref<SearchableBrowserHandle>();
 const databaseBrowserRef = ref<SearchableBrowserHandle>();
 const objectBrowserRef = ref<SearchableBrowserHandle>();
 const pluginFilesystemTabRef = ref<{ refresh: () => Promise<unknown> }>();
-const spreadsheetViewerRef = ref<{ refresh: () => void }>();
+const spreadsheetViewerRef = ref<{ refresh: () => void; focusSearch: () => boolean }>();
 const activeTableMeta = computed(() => props.activeTab.tableMeta);
 const activeDataTabTableMeta = computed(() => tableMetaForDataTab(props.activeTab));
 const activeResultExecutionTarget = computed(() => queryStore.activeResultExecutionTarget(props.activeTab.id));
@@ -974,6 +974,7 @@ function focusSearch(target: Element | null = null): boolean {
   if (props.activeTab.mode === "databases") return databaseBrowserRef.value?.focusSearch() ?? false;
   if (props.activeTab.mode === "objects") return objectBrowserRef.value?.focusSearch(target) ?? false;
   if (props.activeTab.mode === "structure") return tableStructureEditorRef.value?.focusSearch() ?? false;
+  if (props.activeTab.mode === "spreadsheet") return spreadsheetViewerRef.value?.focusSearch() ?? false;
   if (props.activeTab.mode === "query") {
     // The shared result surface (resultOnly) owns the grid, not the editor;
     // route its search to the DataGrid instead of the missing QueryEditor.

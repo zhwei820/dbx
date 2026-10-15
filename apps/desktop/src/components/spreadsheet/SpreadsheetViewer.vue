@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
-import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, PencilLine, Redo2, RefreshCw, Save, Trash2, Undo2 } from "@lucide/vue";
-import type { BeforeRangeSaveDataDetails, BeforeSaveDataDetails, ColumnRegular } from "@revolist/revogrid";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, PencilLine, Redo2, RefreshCw, Save, Search, Trash2, Undo2 } from "@lucide/vue";
+import type { BeforeRangeSaveDataDetails, BeforeSaveDataDetails, ColumnRegular, PropertiesFunc } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
+import TextContentSearchBar from "@/components/common/TextContentSearchBar.vue";
 import { Button } from "@/components/ui/button";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useToast } from "@/composables/useToast";
+import { useVerticalOverlayScrollbar } from "@/composables/useVerticalOverlayScrollbar";
 import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { copyToClipboard } from "@/lib/common/clipboard";
+import { textContentSearchStatus } from "@/lib/common/textContentSearch";
 import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import {
   buildSpreadsheetGrid,
@@ -22,6 +25,7 @@ import {
   deleteSpreadsheetRows,
   duplicateColumnsSplice,
   duplicateSpreadsheetRows,
+  findSpreadsheetMatches,
   type GridRange,
   insertColumnsSplice,
   insertSpreadsheetRows,
@@ -31,8 +35,12 @@ import {
   type SpreadsheetRecord,
   spliceSpreadsheetColumnList,
   spliceSpreadsheetColumns,
+  type SpreadsheetCell,
+  spreadsheetCellMatches,
   spreadsheetColumnName,
   spreadsheetColumns,
+  spreadsheetMatchFrom,
+  SPREADSHEET_SEARCH_MATCH_LIMIT,
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
 } from "@/lib/spreadsheet/spreadsheetGrid";
@@ -83,7 +91,8 @@ async function load(sheetName?: string) {
     activeSort.value = undefined;
     headerSelectionAnchor = -1;
     rowSelectionAnchor = -1;
-    grid.value = buildSpreadsheetGrid(preview.columns, preview.rows);
+    const next = buildSpreadsheetGrid(preview.columns, preview.rows);
+    grid.value = { columns: withSearchHighlight(next.columns), source: next.source };
     pendingCells = [];
     history.reset();
     syncHistory();
@@ -181,6 +190,7 @@ function onBeforeRangeEdit(event: CustomEvent<BeforeRangeSaveDataDetails>) {
 }
 
 function onAfterEdit() {
+  onGridDataChanged();
   const captured = pendingCells;
   pendingCells = [];
   if (captured.length === 0) return;
@@ -355,7 +365,7 @@ async function applyColumnSplice(splice: SpreadsheetColumnSplice, record = true)
   }
   await clearAllFilters();
   headers.value = next.headers;
-  grid.value = { columns: spreadsheetColumns(next.headers, next.width, sizes), source: next.source };
+  grid.value = { columns: withSearchHighlight(spreadsheetColumns(next.headers, next.width, sizes)), source: next.source };
   resetSelectionAnchors();
   await nextTick();
   // Whatever the splice inserted (new, duplicated or restored columns) ends up selected.
@@ -647,9 +657,147 @@ function headerColumnItems(index: number): ContextMenuItem[] {
   ];
 }
 
+// Find runs over the visible (sorted and filtered) rows, so match coordinates are viewport cells.
+const searchBarRef = ref<InstanceType<typeof TextContentSearchBar>>();
+const searchOpen = ref(false);
+const searchQuery = ref("");
+const searchMatches = shallowRef<SpreadsheetCell[]>([]);
+const searchIndex = ref(-1);
+// The lower-cased query the cell highlighter reads; the grid only redraws when it changes.
+let searchNeedle = "";
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let searchGeneration = 0;
+
+const searchStatus = computed(() => textContentSearchStatus(Math.max(searchIndex.value, 0), searchMatches.value.length, searchMatches.value.length >= SPREADSHEET_SEARCH_MATCH_LIMIT));
+
+const highlightSearchMatch: PropertiesFunc = ({ model, prop }) => (spreadsheetCellMatches(model[prop], searchNeedle) ? { class: { "spreadsheet-search-match": true } } : undefined);
+
+function withSearchHighlight(columns: ColumnRegular[]) {
+  for (const column of columns) column.cellProperties = highlightSearchMatch;
+  return columns;
+}
+
+function focusSearch() {
+  if (error.value) return false;
+  searchOpen.value = true;
+  void nextTick(() => searchBarRef.value?.focusInput(true));
+  return true;
+}
+
+function closeSearch() {
+  searchOpen.value = false;
+  searchQuery.value = "";
+}
+
+function scheduleSearch(jump = false) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = undefined;
+    void runSearch(jump);
+  }, 150);
+}
+
+// Edits, sorting and filtering move or change the matches, so they are counted again.
+function onGridDataChanged() {
+  if (searchQuery.value) scheduleSearch();
+}
+
+async function runSearch(jump: boolean) {
+  const generation = ++searchGeneration;
+  const element = gridElement();
+  const query = searchQuery.value;
+  const rows = query && element ? ((await element.getVisibleSource()) as SpreadsheetRecord[]) : [];
+  if (generation !== searchGeneration) return;
+  searchMatches.value = findSpreadsheetMatches(
+    rows,
+    grid.value.columns.map((column) => String(column.prop)),
+    query,
+  );
+  searchIndex.value = -1;
+  const needle = query.toLowerCase();
+  if (needle !== searchNeedle) {
+    searchNeedle = needle;
+    await element?.refresh("rgRow");
+  }
+  if (jump) await stepSearch(1, true);
+}
+
+// Steps from the focused cell, like Excel, so clicking elsewhere and pressing Enter continues from there.
+async function stepSearch(delta: 1 | -1, inclusive = false) {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = undefined;
+    await runSearch(false);
+  }
+  const element = gridElement();
+  const matches = searchMatches.value;
+  if (!element || matches.length === 0) return;
+  const focused = await element.getFocused();
+  const index = spreadsheetMatchFrom(matches, focused ? { x: focused.cell.x, y: focused.cell.y } : undefined, delta, inclusive);
+  const cell = matches[index];
+  searchIndex.value = index;
+  await element.setCellsFocus(cell, cell, "rgCol", "rgRow");
+  await element.scrollToCoordinate(cell);
+  // Focusing the cell must not take Enter away from the find field, or the next Enter would edit it.
+  searchBarRef.value?.focusInput(false);
+}
+
+watch(searchQuery, () => scheduleSearch(true));
+
+// RevoGrid's vertical scrollbar is native, which macOS hides until the grid scrolls and which is easy to miss.
+// An always-visible overlay thumb drives that same scroll element, so dragging it jumps through the sheet.
+const gridContainerRef = ref<HTMLElement>();
+const rowScroller = ref<HTMLElement | null>(null);
+const rowScrollerContent = ref<HTMLElement | null>(null);
+const scrollbarTrackRef = ref<HTMLElement | null>(null);
+const scrollbarBounds = ref({ top: 0, height: 0 });
+const {
+  hasOverflow: hasRowOverflow,
+  isDragging: isScrollbarDragging,
+  thumbStyle: scrollbarThumbStyle,
+  onScroll: onRowScroll,
+  onTrackPointerDown: onScrollbarTrackPointerDown,
+  onThumbPointerDown: onScrollbarThumbPointerDown,
+} = useVerticalOverlayScrollbar(rowScroller, rowScrollerContent, scrollbarTrackRef);
+let scrollerResizeObserver: ResizeObserver | undefined;
+
+function attachRowScroller() {
+  const scroller = gridElement()?.querySelector<HTMLElement>("revogr-scroll-virtual.vertical") ?? null;
+  if (scroller === rowScroller.value) return;
+  rowScroller.value?.removeEventListener("scroll", onRowScroll);
+  scrollerResizeObserver?.disconnect();
+  scroller?.addEventListener("scroll", onRowScroll, { passive: true });
+  rowScroller.value = scroller;
+  rowScrollerContent.value = scroller?.firstElementChild instanceof HTMLElement ? scroller.firstElementChild : null;
+  if (scroller && typeof ResizeObserver !== "undefined") {
+    scrollerResizeObserver = new ResizeObserver(updateScrollbarBounds);
+    scrollerResizeObserver.observe(scroller);
+  }
+  updateScrollbarBounds();
+}
+
+// The track lines up with RevoGrid's scroll element, which leaves room for the horizontal scrollbar.
+function updateScrollbarBounds() {
+  const scroller = rowScroller.value;
+  const container = gridContainerRef.value;
+  if (!scroller || !container) return;
+  const inner = scroller.getBoundingClientRect();
+  scrollbarBounds.value = { top: inner.top - container.getBoundingClientRect().top, height: inner.height };
+}
+
+function onScrollbarWheel(event: WheelEvent) {
+  if (rowScroller.value) rowScroller.value.scrollTop += event.deltaY;
+}
+
 onMounted(() => void load());
 
-defineExpose({ refresh });
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer);
+  rowScroller.value?.removeEventListener("scroll", onRowScroll);
+  scrollerResizeObserver?.disconnect();
+});
+
+defineExpose({ refresh, focusSearch });
 </script>
 
 <template>
@@ -659,7 +807,10 @@ defineExpose({ refresh });
       <span class="shrink-0">· {{ t("spreadsheet.rowCount", { count: grid.source.length }) }}</span>
       <span v-if="truncated" class="shrink-0 text-amber-600 dark:text-amber-400">{{ t("spreadsheet.truncated", { max: SPREADSHEET_VIEWER_MAX_ROWS }) }}</span>
       <span v-if="dirty" class="shrink-0 text-amber-600 dark:text-amber-400">· {{ t("spreadsheet.unsaved") }}</span>
-      <Button variant="ghost" size="icon" class="ml-auto h-7 w-7" :title="`${t('spreadsheet.undo')} (${formatShortcutDisplay('Mod+Z')})`" :aria-label="t('spreadsheet.undo')" :disabled="loading || !historyState.canUndo" @click="stepHistory('undo')">
+      <Button variant="ghost" size="icon" class="ml-auto h-7 w-7" :title="`${t('editor.search.find')} (${formatShortcutDisplay('Mod+F')})`" :aria-label="t('editor.search.find')" :disabled="loading || !!error" @click="focusSearch">
+        <Search class="h-3.5 w-3.5" />
+      </Button>
+      <Button variant="ghost" size="icon" class="h-7 w-7" :title="`${t('spreadsheet.undo')} (${formatShortcutDisplay('Mod+Z')})`" :aria-label="t('spreadsheet.undo')" :disabled="loading || !historyState.canUndo" @click="stepHistory('undo')">
         <Undo2 class="h-3.5 w-3.5" />
       </Button>
       <Button variant="ghost" size="icon" class="h-7 w-7" :title="`${t('spreadsheet.redo')} (${formatShortcutDisplay('Mod+Shift+Z')})`" :aria-label="t('spreadsheet.redo')" :disabled="loading || !historyState.canRedo" @click="stepHistory('redo')">
@@ -674,13 +825,14 @@ defineExpose({ refresh });
         <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
       </Button>
     </div>
-    <div class="relative min-h-0 flex-1">
+    <div ref="gridContainerRef" class="relative min-h-0 flex-1">
       <div v-if="error" class="flex h-full items-center justify-center gap-2 p-6 text-sm text-destructive">
         <AlertTriangle class="h-4 w-4 shrink-0" />
         <span class="break-all">{{ t("spreadsheet.loadFailed", { message: error }) }}</span>
       </div>
       <CustomContextMenu v-else :items="menuItems" v-slot="{ onContextMenu }">
-        <div class="h-full w-full" @contextmenu="onGridContextMenu($event, onContextMenu)" @click="onGridClick" @keydown.capture="onGridKeydown">
+        <!-- isolate keeps RevoGrid's internal z-indexes under the find panel and scrollbar. -->
+        <div class="spreadsheet-grid isolate h-full w-full" @contextmenu="onGridContextMenu($event, onContextMenu)" @click="onGridClick" @keydown.capture="onGridKeydown">
           <VGrid
             ref="gridRef"
             class="h-full w-full"
@@ -697,12 +849,28 @@ defineExpose({ refresh });
             @beforeedit="onBeforeEdit"
             @beforerangeedit="onBeforeRangeEdit"
             @afteredit="onAfterEdit"
+            @aftersourceset="onGridDataChanged"
+            @aftertrimmed="onGridDataChanged"
+            @aftersortingapply="onGridDataChanged"
+            @aftergridrender="attachRowScroller"
             @headerclick="onHeaderClick"
             @headerdblclick="onHeaderDblClick"
             @clipboardrangecopy="onClipboardRangeCopy"
           />
         </div>
       </CustomContextMenu>
+      <div
+        v-if="hasRowOverflow && !error"
+        ref="scrollbarTrackRef"
+        class="spreadsheet-scrollbar"
+        :class="{ 'spreadsheet-scrollbar--dragging': isScrollbarDragging }"
+        :style="{ top: `${scrollbarBounds.top}px`, height: `${scrollbarBounds.height}px` }"
+        @pointerdown="onScrollbarTrackPointerDown"
+        @wheel.prevent="onScrollbarWheel"
+      >
+        <div class="spreadsheet-scrollbar__thumb" :style="scrollbarThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown" />
+      </div>
+      <TextContentSearchBar v-if="searchOpen" ref="searchBarRef" v-model="searchQuery" :status="searchStatus" :match-count="searchMatches.length" @activate="stepSearch" @prev="stepSearch(-1)" @next="stepSearch(1)" @close="closeSearch" />
       <div v-if="loading && !error" class="absolute inset-0 flex items-center justify-center bg-background/60">
         <Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
@@ -716,3 +884,46 @@ defineExpose({ refresh });
     </div>
   </div>
 </template>
+
+<style scoped>
+.spreadsheet-grid :deep(.rgCell.spreadsheet-search-match) {
+  background-color: rgb(250 204 21 / 0.35);
+}
+
+.spreadsheet-grid :deep(revogr-scroll-virtual.vertical) {
+  scrollbar-width: none;
+}
+
+.spreadsheet-grid :deep(revogr-scroll-virtual.vertical::-webkit-scrollbar) {
+  width: 0;
+}
+
+.spreadsheet-scrollbar {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  width: 12px;
+}
+
+.spreadsheet-scrollbar__thumb {
+  position: absolute;
+  right: 2px;
+  width: 6px;
+  min-height: 24px;
+  border-radius: 999px;
+  background: rgb(128 128 128 / 0.45);
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
+  transition:
+    background-color 120ms ease,
+    width 120ms ease,
+    right 120ms ease;
+}
+
+.spreadsheet-scrollbar:hover .spreadsheet-scrollbar__thumb,
+.spreadsheet-scrollbar--dragging .spreadsheet-scrollbar__thumb {
+  right: 1px;
+  width: 10px;
+  background: rgb(128 128 128 / 0.7);
+  background: color-mix(in oklch, var(--foreground) 48%, transparent);
+}
+</style>

@@ -195,3 +195,47 @@ export function captureSpreadsheetColumns(table: SpreadsheetTable, sizes: readon
     return { header: table.headers[at + offset] ?? "", size: sizes[at + offset], values: table.source.map((record) => record[prop] ?? "") };
   });
 }
+
+export const SPREADSHEET_SEARCH_MATCH_LIMIT = 10_000;
+
+export interface SpreadsheetCell {
+  x: number;
+  y: number;
+}
+
+// Case-insensitive substring match; `needle` is already lower-cased.
+export function spreadsheetCellMatches(value: unknown, needle: string): boolean {
+  return !!needle && value != null && value !== "" && String(value).toLowerCase().includes(needle);
+}
+
+// Row-major, so stepping through matches reads the sheet the way Excel's find does.
+export function findSpreadsheetMatches(rows: readonly Record<string, unknown>[], props: readonly string[], query: string, limit = SPREADSHEET_SEARCH_MATCH_LIMIT): SpreadsheetCell[] {
+  const needle = query.toLowerCase();
+  const matches: SpreadsheetCell[] = [];
+  if (!needle) return matches;
+  for (let y = 0; y < rows.length; y++) {
+    const row = rows[y];
+    for (let x = 0; x < props.length; x++) {
+      if (!spreadsheetCellMatches(row[props[x]], needle)) continue;
+      matches.push({ x, y });
+      if (matches.length >= limit) return matches;
+    }
+  }
+  return matches;
+}
+
+// Index of the nearest match after (delta 1) or before (delta -1) the cursor, wrapping around the sheet.
+// `inclusive` lets the cursor's own cell count, so typing a query keeps a cell that already matches.
+export function spreadsheetMatchFrom(matches: readonly SpreadsheetCell[], cursor: SpreadsheetCell | undefined, delta: 1 | -1, inclusive = false): number {
+  if (matches.length === 0) return -1;
+  if (!cursor) return delta === 1 ? 0 : matches.length - 1;
+  const compare = (match: SpreadsheetCell) => match.y - cursor.y || match.x - cursor.x;
+  if (delta === 1) {
+    const index = matches.findIndex((match) => (inclusive ? compare(match) >= 0 : compare(match) > 0));
+    return index >= 0 ? index : 0;
+  }
+  for (let index = matches.length - 1; index >= 0; index--) {
+    if (inclusive ? compare(matches[index]) <= 0 : compare(matches[index]) < 0) return index;
+  }
+  return matches.length - 1;
+}
