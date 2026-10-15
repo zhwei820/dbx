@@ -294,3 +294,15 @@ export function spreadsheetPasteCells(clip: readonly (readonly string[])[], rang
   }
   return cells;
 }
+
+const valueCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+// The column's distinct non-empty values in alphabetical order (numbers by value), for the Equal / Not equal filter.
+export function distinctSpreadsheetValues(rows: readonly Record<string, unknown>[], prop: string): string[] {
+  const values = new Set<string>();
+  for (const row of rows) {
+    const value = row[prop];
+    if (value != null && value !== "") values.add(String(value));
+  }
+  return [...values].sort(valueCollator.compare);
+}

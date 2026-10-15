@@ -2472,6 +2472,7 @@ export default withEnglishFallback({
     reload: "重新載入檔案",
     loadFailed: "開啟檔案失敗：{message}",
     saveAsCsv: "儲存為 CSV",
+    filterPickValue: "選擇一個值",
     saveDisabledTruncated: "只載入了部分資料，儲存會遺失其餘資料",
     saved: "已儲存到 {path}",
     saveFailed: "儲存失敗：{message}",

@@ -2573,6 +2573,7 @@ export default {
     reload: "Reload file",
     loadFailed: "Failed to open file: {message}",
     saveAsCsv: "Save as CSV",
+    filterPickValue: "Select a value",
     saveDisabledTruncated: "Only part of the file is loaded; saving would drop the remaining rows",
     saved: "Saved to {path}",
     saveFailed: "Save failed: {message}",

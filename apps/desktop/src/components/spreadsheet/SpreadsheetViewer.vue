@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch } from "vue";
 import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, PencilLine, Redo2, RefreshCw, Save, Search, Trash2, Undo2 } from "@lucide/vue";
-import type { BeforeRangeSaveDataDetails, BeforeSaveDataDetails, ColumnRegular, PropertiesFunc } from "@revolist/revogrid";
+import { type BeforeRangeSaveDataDetails, type BeforeSaveDataDetails, type ColumnFilterConfig, type ColumnRegular, type ExtraField, filterCoreFunctionsIndexedByType, filterNames, filterTypes, type LogicFunction, type PropertiesFunc } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
 import TextContentSearchBar from "@/components/common/TextContentSearchBar.vue";
@@ -23,6 +23,7 @@ import {
   defaultCsvSavePath,
   deleteColumnsSplice,
   deleteSpreadsheetRows,
+  distinctSpreadsheetValues,
   duplicateColumnsSplice,
   duplicateSpreadsheetRows,
   findSpreadsheetMatches,
@@ -94,7 +95,7 @@ async function load(sheetName?: string) {
     headerSelectionAnchor = -1;
     rowSelectionAnchor = -1;
     const next = buildSpreadsheetGrid(preview.columns, preview.rows);
-    grid.value = { columns: withSearchHighlight(next.columns), source: next.source };
+    grid.value = { columns: decorateColumns(next.columns), source: next.source };
     pendingCells = [];
     history.reset();
     syncHistory();
@@ -231,6 +232,7 @@ function stepHistory(direction: SpreadsheetHistoryDirection) {
 async function replayCells(cells: readonly SpreadsheetCellChange[], direction: SpreadsheetHistoryDirection) {
   const source = await currentSource();
   applySpreadsheetCellChanges(source, cells, direction);
+  onGridDataChanged();
   const element = gridElement();
   if (!element) return;
   await element.refresh("rgRow");
@@ -367,7 +369,7 @@ async function applyColumnSplice(splice: SpreadsheetColumnSplice, record = true)
   }
   await clearAllFilters();
   headers.value = next.headers;
-  grid.value = { columns: withSearchHighlight(spreadsheetColumns(next.headers, next.width, sizes)), source: next.source };
+  grid.value = { columns: decorateColumns(spreadsheetColumns(next.headers, next.width, sizes)), source: next.source };
   resetSelectionAnchors();
   await nextTick();
   // Whatever the splice inserted (new, duplicated or restored columns) ends up selected.
@@ -498,9 +500,13 @@ async function onHeaderClick(event: CustomEvent<ColumnRegular>) {
   // The emitted column also carries its viewport index and the triggering mouse event.
   const detail = event.detail as ColumnRegular & { index?: number; originalEvent?: MouseEvent };
   const target = detail.originalEvent?.target;
-  if (target instanceof Element && target.closest(".rv-filter, .resizable")) return;
   const index = detail.index;
-  if (typeof index !== "number") return;
+  if (typeof index !== "number" || (target instanceof Element && target.closest(".resizable"))) return;
+  // Opening a column's filter selects that column (unless it is already part of the selection) and keeps it selected.
+  if (target instanceof Element && target.closest(".rv-filter")) {
+    if (!headerSelection || index < headerSelection.x || index > headerSelection.x1) await selectColumns(index, index);
+    return;
+  }
   const anchor = detail.originalEvent?.shiftKey && headerSelectionAnchor >= 0 ? headerSelectionAnchor : index;
   await selectColumns(anchor, index);
 }
@@ -633,7 +639,6 @@ async function pasteIntoSelection() {
   if (cells.length === 0) return;
   recordChange({ kind: "cells", cells });
   await replayCells(cells, "redo");
-  onGridDataChanged();
 }
 
 function hasTextSelection(target: Element | null) {
@@ -727,8 +732,11 @@ const searchStatus = computed(() => textContentSearchStatus(Math.max(searchIndex
 
 const highlightSearchMatch: PropertiesFunc = ({ model, prop }) => (spreadsheetCellMatches(model[prop], searchNeedle) ? { class: { "spreadsheet-search-match": true } } : undefined);
 
-function withSearchHighlight(columns: ColumnRegular[]) {
-  for (const column of columns) column.cellProperties = highlightSearchMatch;
+function decorateColumns(columns: ColumnRegular[]) {
+  for (const column of columns) {
+    column.cellProperties = highlightSearchMatch;
+    column.filter = SPREADSHEET_FILTER_TYPE;
+  }
   return columns;
 }
 
@@ -754,7 +762,70 @@ function scheduleSearch(jump = false) {
 
 // Edits, sorting and filtering move or change the matches, so they are counted again.
 function onGridDataChanged() {
+  filterValueCache.clear();
   if (searchQuery.value) scheduleSearch();
+}
+
+// Columns get their own filter operator group so Equal / Not equal can offer the column's values. The built-in
+// "string" group cannot be extended instead: RevoGrid pushes custom filters into its shared module-level arrays.
+const SPREADSHEET_FILTER_TYPE = "spreadsheet";
+// Past this many distinct values a dropdown stops being usable, so the filter falls back to typing.
+const FILTER_PICK_MAX_VALUES = 5000;
+const filterValueCache = new Map<string, string[]>();
+
+function columnFilterValues(prop: string) {
+  let values = filterValueCache.get(prop);
+  if (!values) {
+    // RevoGrid edits the records in place, so the raw source already holds every edit.
+    values = distinctSpreadsheetValues(toRaw(grid.value.source), prop);
+    filterValueCache.set(prop, values);
+  }
+  return values;
+}
+
+const renderFilterValuePicker: ExtraField = (h, { value, prop, placeholder, onInput }) => {
+  const values = columnFilterValues(String(prop));
+  const current = value == null ? "" : String(value);
+  // Keys stay inside the panel; on the document RevoGrid would treat them as grid navigation or cell input.
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "Enter") event.stopPropagation();
+  };
+  if (values.length > FILTER_PICK_MAX_VALUES) {
+    return h("input", { type: "text", placeholder, value: current, onKeyDown, onInput: (event: Event) => onInput((event.target as HTMLInputElement).value) });
+  }
+  const options = current && !values.includes(current) ? [current, ...values] : values;
+  return h("select", { class: "select-css select-filter", onKeyDown, onChange: (event: Event) => onInput((event.target as HTMLSelectElement).value) }, [
+    h("option", { value: "", selected: !current }, t("spreadsheet.filterPickValue")),
+    ...options.map((option) => h("option", { value: option, selected: option === current }, option)),
+  ]);
+};
+
+function withValuePicker(filter: LogicFunction): LogicFunction {
+  const picked: LogicFunction = (value, extra, context) => filter(value, extra, context);
+  picked.extra = renderFilterValuePicker;
+  return picked;
+}
+
+const filterConfig: ColumnFilterConfig = {
+  customFilters: Object.fromEntries(
+    filterTypes.string.map((type) => {
+      const filter = filterCoreFunctionsIndexedByType[type];
+      return [type, { columnFilterType: SPREADSHEET_FILTER_TYPE, name: filterNames[type], func: type === "eq" || type === "notEq" ? withValuePicker(filter) : filter }];
+    }),
+  ),
+};
+
+// Filtering changes the visible rows, so columns picked from their headers are selected again over the new rows,
+// unless the selection has since moved elsewhere.
+async function onGridTrimmed() {
+  onGridDataChanged();
+  const selected = headerSelection;
+  const element = gridElement();
+  if (!selected || !element) return;
+  const range = await element.getSelectedRange();
+  if (range && (range.y !== 0 || range.x !== selected.x || range.x1 !== selected.x1)) return;
+  const anchor = headerSelectionAnchor === selected.x1 ? selected.x1 : selected.x;
+  await selectColumns(anchor, anchor === selected.x ? selected.x1 : selected.x);
 }
 
 async function runSearch(jump: boolean) {
@@ -917,14 +988,14 @@ defineExpose({ refresh, focusSearch });
             :apply-on-close="true"
             :resize="true"
             :range="true"
-            :filter="true"
+            :filter="filterConfig"
             :row-headers="true"
             :can-focus="true"
             @beforeedit="onBeforeEdit"
             @beforerangeedit="onBeforeRangeEdit"
             @afteredit="onAfterEdit"
             @aftersourceset="onGridDataChanged"
-            @aftertrimmed="onGridDataChanged"
+            @aftertrimmed="onGridTrimmed"
             @aftersortingapply="onGridDataChanged"
             @aftergridrender="attachRowScroller"
             @headerclick="onHeaderClick"

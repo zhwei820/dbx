@@ -6,6 +6,7 @@ import {
   defaultCsvSavePath,
   deleteColumnsSplice,
   deleteSpreadsheetRows,
+  distinctSpreadsheetValues,
   duplicateColumnsSplice,
   duplicateSpreadsheetRows,
   findSpreadsheetMatches,
@@ -261,5 +262,12 @@ describe("spreadsheet paste", () => {
 
   it("drops cells past the sheet edge", () => {
     expect(spreadsheetPasteCells([["a", "b"]], { x: 2, y: 4, x1: 2, y1: 4 }, 5, 3)).toEqual([{ x: 2, y: 4, value: "a" }]);
+  });
+});
+
+describe("spreadsheet filter values", () => {
+  it("lists distinct non-empty values alphabetically", () => {
+    const rows = [{ c0: "pear" }, { c0: "Apple" }, { c0: "" }, { c0: 10 }, { c0: "pear" }, { c0: 9 }, { c0: null }, { c0: "banana" }];
+    expect(distinctSpreadsheetValues(rows, "c0")).toEqual(["9", "10", "Apple", "banana", "pear"]);
   });
 });

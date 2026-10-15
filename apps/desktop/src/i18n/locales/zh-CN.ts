@@ -2487,6 +2487,7 @@ export default withEnglishFallback({
     reload: "重新加载文件",
     loadFailed: "打开文件失败：{message}",
     saveAsCsv: "保存为 CSV",
+    filterPickValue: "选择一个值",
     saveDisabledTruncated: "只加载了部分行，保存会丢掉其余数据",
     saved: "已保存到 {path}",
     saveFailed: "保存失败：{message}",
