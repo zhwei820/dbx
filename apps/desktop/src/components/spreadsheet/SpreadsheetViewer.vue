@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { AlertTriangle, ArrowDownAZ, ArrowDownZA, ArrowUpDown, Copy, Filter, FilterX, Loader2, RefreshCw, Save } from "@lucide/vue";
+import { computed, nextTick, onMounted, ref } from "vue";
+import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, RefreshCw, Save, Trash2 } from "@lucide/vue";
 import type { ColumnRegular } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
@@ -11,7 +11,27 @@ import { useToast } from "@/composables/useToast";
 import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { copyToClipboard } from "@/lib/common/clipboard";
-import { buildSpreadsheetGrid, columnClipboardText, defaultCsvSavePath, type GridRange, rangeClipboardText, SPREADSHEET_VIEWER_MAX_ROWS, spreadsheetSourceToRows } from "@/lib/spreadsheet/spreadsheetGrid";
+import {
+  buildSpreadsheetGrid,
+  columnClipboardText,
+  defaultCsvSavePath,
+  deleteColumnsSplice,
+  deleteSpreadsheetRows,
+  duplicateColumnsSplice,
+  duplicateSpreadsheetRows,
+  type GridRange,
+  insertColumnsSplice,
+  insertSpreadsheetRows,
+  rangeClipboardText,
+  type SpreadsheetColumnSplice,
+  type SpreadsheetRecord,
+  spliceSpreadsheetColumnList,
+  spliceSpreadsheetColumns,
+  spreadsheetColumns,
+  SPREADSHEET_VIEWER_MAX_ROWS,
+  spreadsheetSourceToRows,
+} from "@/lib/spreadsheet/spreadsheetGrid";
+import SpreadsheetInsertDialog, { type SpreadsheetInsertPosition } from "@/components/spreadsheet/SpreadsheetInsertDialog.vue";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const props = defineProps<{ filePath: string }>();
@@ -110,20 +130,154 @@ async function saveAsCsv() {
   }
 }
 
-const headerMenuColumn = ref(-1);
+// Columns are never reordered or pinned, so a header's viewport index is also its physical index.
+// Rows carry both: the viewport range for selection and the physical source indices for editing.
+type MenuTarget = { kind: "column"; index: number; start: number; end: number } | { kind: "row"; start: number; end: number; physical: number[] };
 
-function onGridContextMenu(event: MouseEvent, openMenu: (event: MouseEvent) => void) {
-  const cell = event.target instanceof Element ? event.target.closest(".rgHeaderCell") : null;
+const menuTarget = ref<MenuTarget>();
+
+async function onGridContextMenu(event: MouseEvent, openMenu: (event: MouseEvent) => void) {
+  const target = event.target instanceof Element ? event.target : null;
+  const headerCell = target?.closest(".rgHeaderCell");
+  const rowCell = target?.closest(".rowHeaders .rgCell");
   // The row-number column's header carries data-rgcol too, so exclude it explicitly.
-  if (!cell || cell.closest(".rowHeaders")) return;
-  const index = Number(cell.getAttribute("data-rgcol"));
-  if (!Number.isInteger(index) || !grid.value.columns[index]) return;
-  headerMenuColumn.value = index;
+  const column = headerCell && !headerCell.closest(".rowHeaders") ? Number(headerCell.getAttribute("data-rgcol")) : NaN;
+  const row = rowCell ? Number(rowCell.getAttribute("data-rgrow")) : NaN;
+  const isColumn = Number.isInteger(column) && !!grid.value.columns[column];
+  if (!isColumn && !Number.isInteger(row)) return;
+  // The selection lookups are async, so keep the native menu away before awaiting them.
+  event.preventDefault();
+  event.stopPropagation();
+  const element = gridElement();
+  if (!element) return;
+  const range = await element.getSelectedRange();
+  if (isColumn) {
+    const inRange = !!range && range.x <= column && column <= range.x1;
+    const start = inRange ? range.x : column;
+    const end = inRange ? range.x1 : column;
+    if (!inRange) await selectColumns(column, column);
+    menuTarget.value = { kind: "column", index: column, start, end };
+  } else {
+    const inRange = !!range && range.y <= row && row <= range.y1;
+    const start = inRange ? range.y : row;
+    const end = inRange ? range.y1 : row;
+    if (!inRange) await selectRows(row, row);
+    menuTarget.value = { kind: "row", start, end, physical: await physicalRowIndexes(start, end) };
+  }
   openMenu(event);
 }
 
 function gridElement() {
   return gridRef.value?.$el;
+}
+
+async function physicalRowIndexes(start: number, end: number): Promise<number[]> {
+  const element = gridElement();
+  if (!element) return [];
+  // Visible rows are the same objects as the backing source, just sorted and filtered.
+  const source = await element.getSource();
+  const positions = new Map(source.map((record, index) => [record, index]));
+  const visible = await element.getVisibleSource();
+  return visible
+    .slice(start, end + 1)
+    .map((record) => positions.get(record))
+    .filter((index): index is number => index !== undefined);
+}
+
+async function currentSource(): Promise<SpreadsheetRecord[]> {
+  // getSource includes in-grid edits that grid.source does not.
+  return ((await gridElement()?.getSource()) ?? grid.value.source) as SpreadsheetRecord[];
+}
+
+function resetSelectionAnchors() {
+  headerSelection = undefined;
+  headerSelectionAnchor = -1;
+  rowSelectionAnchor = -1;
+}
+
+async function replaceRows(source: SpreadsheetRecord[], focus: SpreadsheetRecord[] = []) {
+  grid.value = { columns: grid.value.columns, source };
+  dirty.value = true;
+  resetSelectionAnchors();
+  await nextTick();
+  const element = gridElement();
+  if (!element) return;
+  if (focus.length === 0) {
+    await element.clearFocus();
+    return;
+  }
+  const visible = await element.getVisibleSource();
+  const rows = focus.map((record) => visible.indexOf(record)).filter((index) => index >= 0);
+  if (rows.length > 0) await selectRows(Math.min(...rows), Math.max(...rows));
+}
+
+async function insertRows(target: Extract<MenuTarget, { kind: "row" }> | undefined, count: number, position: SpreadsheetInsertPosition) {
+  const source = await currentSource();
+  const width = grid.value.columns.length;
+  // Without a row target (empty sheet) rows are appended.
+  const at = !target || target.physical.length === 0 ? source.length : position === "before" ? Math.min(...target.physical) : Math.max(...target.physical) + 1;
+  const next = insertSpreadsheetRows(source, at, count, width);
+  await replaceRows(next, next.slice(at, at + count));
+}
+
+async function duplicateRows(target: Extract<MenuTarget, { kind: "row" }>) {
+  const result = duplicateSpreadsheetRows(await currentSource(), target.physical);
+  await replaceRows(result.source, result.source.slice(result.at, result.at + result.count));
+}
+
+async function deleteRows(target: Extract<MenuTarget, { kind: "row" }>) {
+  await replaceRows(deleteSpreadsheetRows(await currentSource(), target.physical));
+}
+
+async function applyColumnSplice(splice: SpreadsheetColumnSplice, focus?: { start: number; end: number }) {
+  const element = gridElement();
+  const width = grid.value.columns.length;
+  const next = spliceSpreadsheetColumns({ headers: headers.value, source: await currentSource(), width }, splice);
+  const sizes = spliceSpreadsheetColumnList(
+    grid.value.columns.map((column) => column.size),
+    splice,
+    undefined,
+  );
+  // Sort and filter state is keyed by the positional prop, so it would jump to whichever column now owns it.
+  if (activeSort.value) {
+    activeSort.value = undefined;
+    await element?.clearSorting();
+  }
+  await clearAllFilters();
+  headers.value = next.headers;
+  grid.value = { columns: spreadsheetColumns(next.headers, next.width, sizes), source: next.source };
+  dirty.value = true;
+  resetSelectionAnchors();
+  await nextTick();
+  if (focus && next.width > 0) await selectColumns(focus.start, Math.min(focus.end, next.width - 1));
+  else await element?.clearFocus();
+}
+
+function insertColumns(target: Extract<MenuTarget, { kind: "column" }>, count: number, position: SpreadsheetInsertPosition) {
+  const at = position === "before" ? target.start : target.end + 1;
+  void applyColumnSplice(insertColumnsSplice(at, count), { start: at, end: at + count - 1 });
+}
+
+function duplicateColumns(target: Extract<MenuTarget, { kind: "column" }>) {
+  const count = target.end - target.start + 1;
+  void applyColumnSplice(duplicateColumnsSplice(target.start, target.end), { start: target.end + 1, end: target.end + count });
+}
+
+function deleteColumns(target: Extract<MenuTarget, { kind: "column" }>) {
+  void applyColumnSplice(deleteColumnsSplice(target.start, target.end));
+}
+
+const insertDialog = ref<{ open: boolean; kind: "rows" | "columns"; count: number; target?: MenuTarget }>({ open: false, kind: "rows", count: 1 });
+
+function openInsertDialog(target: MenuTarget) {
+  const count = target.end - target.start + 1;
+  insertDialog.value = { open: true, kind: target.kind === "row" ? "rows" : "columns", count, target };
+}
+
+function onInsertDialogConfirm(count: number, position: SpreadsheetInsertPosition) {
+  const target = insertDialog.value.target;
+  if (target?.kind === "column") insertColumns(target, count, position);
+  else void insertRows(target, count, position);
 }
 
 async function copyColumn(index: number, withHeader: boolean) {
@@ -191,11 +345,16 @@ async function onHeaderClick(event: CustomEvent<ColumnRegular>) {
   const target = detail.originalEvent?.target;
   if (target instanceof Element && target.closest(".rv-filter, .resizable")) return;
   const index = detail.index;
+  if (typeof index !== "number") return;
+  const anchor = detail.originalEvent?.shiftKey && headerSelectionAnchor >= 0 ? headerSelectionAnchor : index;
+  await selectColumns(anchor, index);
+}
+
+async function selectColumns(anchor: number, index: number) {
   const element = gridElement();
-  if (typeof index !== "number" || !element) return;
+  if (!element) return;
   const rowCount = (await element.getVisibleSource()).length;
   if (rowCount === 0) return;
-  const anchor = detail.originalEvent?.shiftKey && headerSelectionAnchor >= 0 ? headerSelectionAnchor : index;
   headerSelectionAnchor = anchor;
   headerSelection = { x: Math.min(anchor, index), x1: Math.max(anchor, index), y1: rowCount - 1 };
   await element.setCellsFocus({ x: headerSelection.x, y: 0 }, { x: headerSelection.x1, y: headerSelection.y1 }, "rgCol", "rgRow");
@@ -217,12 +376,16 @@ let rowSelectionAnchor = -1;
 
 async function onGridClick(event: MouseEvent) {
   const cell = event.target instanceof Element ? event.target.closest(".rowHeaders .rgCell") : null;
-  const element = gridElement();
-  if (!cell || !element) return;
+  if (!cell) return;
   const row = Number(cell.getAttribute("data-rgrow"));
+  if (!Number.isInteger(row)) return;
+  await selectRows(event.shiftKey && rowSelectionAnchor >= 0 ? rowSelectionAnchor : row, row);
+}
+
+async function selectRows(anchor: number, row: number) {
+  const element = gridElement();
   const lastColumn = grid.value.columns.length - 1;
-  if (!Number.isInteger(row) || lastColumn < 0) return;
-  const anchor = event.shiftKey && rowSelectionAnchor >= 0 ? rowSelectionAnchor : row;
+  if (!element || lastColumn < 0) return;
   rowSelectionAnchor = anchor;
   await element.setCellsFocus({ x: 0, y: Math.min(anchor, row) }, { x: lastColumn, y: Math.max(anchor, row) }, "rgCol", "rgRow");
 }
@@ -266,9 +429,44 @@ function onGridKeydown(event: KeyboardEvent) {
   }
 }
 
-function headerMenuItems(): ContextMenuItem[] {
-  const index = headerMenuColumn.value;
+function menuItems(): ContextMenuItem[] {
+  const target = menuTarget.value;
+  if (!target) return [];
+  return target.kind === "row" ? rowMenuItems(target) : columnMenuItems(target);
+}
+
+function rowMenuItems(target: Extract<MenuTarget, { kind: "row" }>): ContextMenuItem[] {
+  const count = target.physical.length;
+  if (count === 0) return [];
+  return [
+    { label: t("spreadsheet.menu.insertRowsAbove", { count }, count), icon: ArrowUpToLine, action: () => void insertRows(target, count, "before") },
+    { label: t("spreadsheet.menu.insertRowsBelow", { count }, count), icon: ArrowDownToLine, action: () => void insertRows(target, count, "after") },
+    { label: t("spreadsheet.menu.insertRowsMultiple"), icon: ListPlus, action: () => openInsertDialog(target) },
+    { label: t("spreadsheet.menu.duplicateRows", { count }, count), icon: CopyPlus, action: () => void duplicateRows(target) },
+    { label: "", separator: true },
+    { label: t("spreadsheet.menu.deleteRows", { count }, count), icon: Trash2, variant: "destructive", action: () => void deleteRows(target) },
+  ];
+}
+
+function columnMenuItems(target: Extract<MenuTarget, { kind: "column" }>): ContextMenuItem[] {
+  const index = target.index;
   if (!grid.value.columns[index]) return [];
+  const count = target.end - target.start + 1;
+  const structure: ContextMenuItem[] = [
+    { label: "", separator: true },
+    { label: t("spreadsheet.menu.insertColumnsLeft", { count }, count), icon: ArrowLeftToLine, action: () => insertColumns(target, count, "before") },
+    { label: t("spreadsheet.menu.insertColumnsRight", { count }, count), icon: ArrowRightToLine, action: () => insertColumns(target, count, "after") },
+    { label: t("spreadsheet.menu.insertColumnsMultiple"), icon: ListPlus, action: () => openInsertDialog(target) },
+    { label: t("spreadsheet.menu.duplicateColumns", { count }, count), icon: CopyPlus, action: () => duplicateColumns(target) },
+    // Removing every column leaves no header to right-click, so at least one has to stay.
+    { label: t("spreadsheet.menu.deleteColumns", { count }, count), icon: Trash2, variant: "destructive", disabled: count >= grid.value.columns.length, action: () => deleteColumns(target) },
+  ];
+  // An empty sheet has no row numbers to right-click, so offer the first row here.
+  if (grid.value.source.length === 0) structure.push({ label: t("spreadsheet.menu.appendRow"), icon: ListPlus, action: () => void insertRows(undefined, 1, "after") });
+  return [...headerColumnItems(index), ...structure];
+}
+
+function headerColumnItems(index: number): ContextMenuItem[] {
   return [
     {
       label: t("spreadsheet.menu.copy"),
@@ -325,7 +523,7 @@ defineExpose({ refresh });
         <AlertTriangle class="h-4 w-4 shrink-0" />
         <span class="break-all">{{ t("spreadsheet.loadFailed", { message: error }) }}</span>
       </div>
-      <CustomContextMenu v-else :items="headerMenuItems" v-slot="{ onContextMenu }">
+      <CustomContextMenu v-else :items="menuItems" v-slot="{ onContextMenu }">
         <div class="h-full w-full" @contextmenu="onGridContextMenu($event, onContextMenu)" @click="onGridClick" @keydown.capture="onGridKeydown">
           <VGrid
             ref="gridRef"
@@ -350,6 +548,7 @@ defineExpose({ refresh });
         <Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     </div>
+    <SpreadsheetInsertDialog v-model:open="insertDialog.open" :kind="insertDialog.kind" :initial-count="insertDialog.count" @insert="onInsertDialogConfirm" />
     <div v-if="sheets.length > 1" class="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-t px-2">
       <button v-for="sheet in sheets" :key="sheet" type="button" class="shrink-0 rounded px-2 py-0.5 text-xs" :class="sheet === activeSheet ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60'" :disabled="loading" @click="switchSheet(sheet)">
         {{ sheet }}

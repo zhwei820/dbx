@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { buildSpreadsheetGrid, columnClipboardText, columnLetter, defaultCsvSavePath, rangeClipboardText, spreadsheetSourceToRows } from "../spreadsheetGrid";
+import {
+  buildSpreadsheetGrid,
+  columnClipboardText,
+  columnLetter,
+  defaultCsvSavePath,
+  deleteColumnsSplice,
+  deleteSpreadsheetRows,
+  duplicateColumnsSplice,
+  duplicateSpreadsheetRows,
+  insertColumnsSplice,
+  insertSpreadsheetRows,
+  rangeClipboardText,
+  spliceSpreadsheetColumnList,
+  spliceSpreadsheetColumns,
+  spreadsheetColumns,
+  spreadsheetSourceToRows,
+} from "../spreadsheetGrid";
 
 describe("buildSpreadsheetGrid", () => {
   it("keys cells by position so duplicate or blank headers stay distinct", () => {
@@ -75,5 +91,82 @@ describe("rangeClipboardText", () => {
 
   it("omits the header row when not requested", () => {
     expect(rangeClipboardText(source, columns, { x: 0, y: 0, x1: 0, y1: 1 }, false)).toBe("1\n2");
+  });
+});
+
+describe("spreadsheet row editing", () => {
+  const source = () => [{ c0: "a" }, { c0: "b" }, { c0: "c" }];
+
+  it("inserts empty rows at a physical index without copying the other records", () => {
+    const original = source();
+    const next = insertSpreadsheetRows(original, 1, 2, 2);
+
+    expect(next).toEqual([{ c0: "a" }, { c0: "", c1: "" }, { c0: "", c1: "" }, { c0: "b" }, { c0: "c" }]);
+    expect(next[0]).toBe(original[0]);
+    expect(next[1]).not.toBe(next[2]);
+  });
+
+  it("clamps the insert position to the source bounds", () => {
+    expect(insertSpreadsheetRows(source(), 99, 1, 1).at(-1)).toEqual({ c0: "" });
+    expect(insertSpreadsheetRows([], 0, 1, 1)).toEqual([{ c0: "" }]);
+  });
+
+  it("duplicates rows as one block after the last selected row", () => {
+    const original = source();
+    const result = duplicateSpreadsheetRows(original, [2, 0]);
+
+    expect(result.source.map((row) => row.c0)).toEqual(["a", "b", "c", "a", "c"]);
+    expect(result).toMatchObject({ at: 3, count: 2 });
+    expect(result.source[3]).not.toBe(original[0]);
+  });
+
+  it("deletes rows by physical index", () => {
+    expect(deleteSpreadsheetRows(source(), [0, 2])).toEqual([{ c0: "b" }]);
+  });
+});
+
+describe("spreadsheet column editing", () => {
+  const table = () => ({
+    headers: ["id", "name"],
+    source: [
+      { c0: 1, c1: "x" },
+      { c0: 2, c1: "y" },
+    ],
+    width: 3,
+  });
+
+  it("re-keys cells after inserting empty columns", () => {
+    const next = spliceSpreadsheetColumns(table(), insertColumnsSplice(1, 2));
+
+    expect(next.width).toBe(5);
+    expect(next.headers).toEqual(["id", "", "", "name", ""]);
+    expect(next.source[0]).toEqual({ c0: 1, c1: "", c2: "", c3: "x", c4: "" });
+  });
+
+  it("duplicates a column range to its right with the same headers and values", () => {
+    const next = spliceSpreadsheetColumns(table(), duplicateColumnsSplice(0, 1));
+
+    expect(next.headers).toEqual(["id", "name", "id", "name", ""]);
+    expect(next.source[1]).toEqual({ c0: 2, c1: "y", c2: 2, c3: "y", c4: "" });
+  });
+
+  it("deletes a column range", () => {
+    const next = spliceSpreadsheetColumns(table(), deleteColumnsSplice(0, 0));
+
+    expect(next.headers).toEqual(["name", ""]);
+    expect(next.source[0]).toEqual({ c0: "x", c1: "" });
+  });
+
+  it("applies the same splice to per-column metadata such as widths", () => {
+    expect(spliceSpreadsheetColumnList([80, 120], duplicateColumnsSplice(1, 1), undefined)).toEqual([80, 120, 120]);
+    expect(spliceSpreadsheetColumnList<number | undefined>([80, 120], insertColumnsSplice(0, 1), undefined)).toEqual([undefined, 80, 120]);
+  });
+
+  it("names columns from headers with letter fallbacks and keeps known widths", () => {
+    expect(spreadsheetColumns(["id", ""], 3, [90]).map((column) => [column.prop, column.name, column.size])).toEqual([
+      ["c0", "id", 90],
+      ["c1", "B", 140],
+      ["c2", "C", 140],
+    ]);
   });
 });
