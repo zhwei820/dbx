@@ -667,6 +667,8 @@ const searchIndex = ref(-1);
 let searchNeedle = "";
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let searchGeneration = 0;
+// The match last stepped to, for when the grid has no focused cell to step from.
+let lastSearchCell: SpreadsheetCell | undefined;
 
 const searchStatus = computed(() => textContentSearchStatus(Math.max(searchIndex.value, 0), searchMatches.value.length, searchMatches.value.length >= SPREADSHEET_SEARCH_MATCH_LIMIT));
 
@@ -733,9 +735,10 @@ async function stepSearch(delta: 1 | -1, inclusive = false) {
   const matches = searchMatches.value;
   if (!element || matches.length === 0) return;
   const focused = await element.getFocused();
-  const index = spreadsheetMatchFrom(matches, focused ? { x: focused.cell.x, y: focused.cell.y } : undefined, delta, inclusive);
+  const index = spreadsheetMatchFrom(matches, focused ? { x: focused.cell.x, y: focused.cell.y } : lastSearchCell, delta, inclusive);
   const cell = matches[index];
   searchIndex.value = index;
+  lastSearchCell = cell;
   await element.setCellsFocus(cell, cell, "rgCol", "rgRow");
   await element.scrollToCoordinate(cell);
   // Focusing the cell must not take Enter away from the find field, or the next Enter would edit it.
@@ -743,6 +746,12 @@ async function stepSearch(delta: 1 | -1, inclusive = false) {
 }
 
 watch(searchQuery, () => scheduleSearch(true));
+
+// RevoGrid clears its focused cell on any mouseup outside the grid that is not prevented, which would drop
+// the current match whenever the find panel's buttons or the scrollbar are clicked.
+function keepGridFocus(event: MouseEvent) {
+  event.preventDefault();
+}
 
 // RevoGrid reads keys from the whole document, so typing in a field outside the grid (such as the find field)
 // would otherwise start editing, or with Backspace clear, the focused cell.
@@ -874,11 +883,12 @@ defineExpose({ refresh, focusSearch });
         :class="{ 'spreadsheet-scrollbar--dragging': isScrollbarDragging }"
         :style="{ top: `${scrollbarBounds.top}px`, height: `${scrollbarBounds.height}px` }"
         @pointerdown="onScrollbarTrackPointerDown"
+        @mouseup="keepGridFocus"
         @wheel.prevent="onScrollbarWheel"
       >
         <div class="spreadsheet-scrollbar__thumb" :style="scrollbarThumbStyle" @pointerdown.stop="onScrollbarThumbPointerDown" />
       </div>
-      <TextContentSearchBar v-if="searchOpen" ref="searchBarRef" v-model="searchQuery" :status="searchStatus" :match-count="searchMatches.length" @activate="stepSearch" @prev="stepSearch(-1)" @next="stepSearch(1)" @close="closeSearch" />
+      <TextContentSearchBar v-if="searchOpen" ref="searchBarRef" v-model="searchQuery" :status="searchStatus" :match-count="searchMatches.length" @activate="stepSearch" @prev="stepSearch(-1)" @next="stepSearch(1)" @close="closeSearch" @mouseup="keepGridFocus" />
       <div v-if="loading && !error" class="absolute inset-0 flex items-center justify-center bg-background/60">
         <Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
