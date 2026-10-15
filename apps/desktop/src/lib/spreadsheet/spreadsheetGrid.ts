@@ -11,7 +11,7 @@ export type SpreadsheetRecord = Record<string, unknown>;
 export function spreadsheetColumns(headers: readonly string[], width: number, sizes: readonly (number | undefined)[] = []): ColumnRegular[] {
   return Array.from({ length: width }, (_, index) => ({
     prop: `c${index}`,
-    name: headers[index] || columnLetter(index),
+    name: spreadsheetColumnName(headers, index),
     // Header clicks select the column (spreadsheet-style); sorting lives in the header context menu.
     size: sizes[index] ?? DEFAULT_COLUMN_SIZE,
   }));
@@ -30,6 +30,18 @@ export function buildSpreadsheetGrid(headers: string[], rows: unknown[][]) {
     return record;
   });
   return { columns, source };
+}
+
+// A blank header shows the column letter, but stays blank in the headers that get saved.
+export function spreadsheetColumnName(headers: readonly string[], index: number): string {
+  return headers[index] || columnLetter(index);
+}
+
+// Headers can be shorter than the grid when rows are wider than the header row; renaming pads them out.
+export function renameSpreadsheetHeader(headers: readonly string[], width: number, index: number, name: string): string[] {
+  const next = Array.from({ length: Math.max(width, headers.length) }, (_, column) => headers[column] ?? "");
+  if (index >= 0 && index < next.length) next[index] = name;
+  return next;
 }
 
 export function columnLetter(index: number): string {

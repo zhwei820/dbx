@@ -2505,7 +2505,14 @@ export default withEnglishFallback({
       insertColumnsMultiple: "插入多欄…",
       duplicateColumns: "複製 {count} 欄為新欄",
       deleteColumns: "刪除 {count} 欄",
+      renameColumn: "重新命名欄…",
       appendRow: "新增列",
+    },
+    renameDialog: {
+      title: "重新命名欄",
+      hint: "留空則顯示欄字母（{letter}），儲存的檔案中該欄名為空。",
+      name: "欄名",
+      confirm: "重新命名",
     },
     insertDialog: {
       rowsTitle: "插入列",

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
-import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, Redo2, RefreshCw, Save, Trash2, Undo2 } from "@lucide/vue";
+import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, PencilLine, Redo2, RefreshCw, Save, Trash2, Undo2 } from "@lucide/vue";
 import type { BeforeRangeSaveDataDetails, BeforeSaveDataDetails, ColumnRegular } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
@@ -16,6 +16,7 @@ import {
   buildSpreadsheetGrid,
   captureSpreadsheetColumns,
   columnClipboardText,
+  columnLetter,
   defaultCsvSavePath,
   deleteColumnsSplice,
   deleteSpreadsheetRows,
@@ -25,16 +26,19 @@ import {
   insertColumnsSplice,
   insertSpreadsheetRows,
   rangeClipboardText,
+  renameSpreadsheetHeader,
   type SpreadsheetColumnSplice,
   type SpreadsheetRecord,
   spliceSpreadsheetColumnList,
   spliceSpreadsheetColumns,
+  spreadsheetColumnName,
   spreadsheetColumns,
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
 } from "@/lib/spreadsheet/spreadsheetGrid";
 import { applySpreadsheetCellChanges, applySpreadsheetRowPatch, diffSpreadsheetRows, invertColumnSplice, type SpreadsheetCellChange, type SpreadsheetChange, SpreadsheetHistory, type SpreadsheetHistoryDirection } from "@/lib/spreadsheet/spreadsheetHistory";
 import SpreadsheetInsertDialog, { type SpreadsheetInsertPosition } from "@/components/spreadsheet/SpreadsheetInsertDialog.vue";
+import SpreadsheetRenameColumnDialog from "@/components/spreadsheet/SpreadsheetRenameColumnDialog.vue";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const props = defineProps<{ filePath: string }>();
@@ -203,6 +207,9 @@ function stepHistory(direction: SpreadsheetHistoryDirection) {
     } else if (change.kind === "rows") {
       const next = applySpreadsheetRowPatch(await currentSource(), change.patch, direction);
       await replaceRows(next.source, next.restored);
+    } else if (change.kind === "header") {
+      await applyHeaderName(change.index, direction === "undo" ? change.before : change.after);
+      await selectColumns(change.index, change.index);
     } else {
       await applyColumnSplice(direction === "undo" ? invertColumnSplice(change.splice, change.removed) : change.splice, false);
     }
@@ -367,6 +374,40 @@ function duplicateColumns(target: Extract<MenuTarget, { kind: "column" }>) {
 
 function deleteColumns(target: Extract<MenuTarget, { kind: "column" }>) {
   runEdit(() => applyColumnSplice(deleteColumnsSplice(target.start, target.end)));
+}
+
+// Renaming only touches the header, so the grid's column is patched in place: handing VGrid a new column list
+// would clear the active sort, and the filter icon lives on the grid's own copy of the column.
+async function applyHeaderName(index: number, name: string) {
+  const column = grid.value.columns[index];
+  if (!column) return;
+  headers.value = renameSpreadsheetHeader(headers.value, grid.value.columns.length, index, name);
+  column.name = spreadsheetColumnName(headers.value, index);
+  const element = gridElement();
+  const live = (await element?.getColumns())?.find((candidate) => candidate.prop === column.prop);
+  if (live) await element?.updateColumns([{ ...live, name: column.name }]);
+}
+
+function renameColumn(index: number, name: string) {
+  runEdit(async () => {
+    const before = headers.value[index] ?? "";
+    if (before === name || !grid.value.columns[index]) return;
+    recordChange({ kind: "header", index, before, after: name });
+    await applyHeaderName(index, name);
+  });
+}
+
+const renameDialog = ref<{ open: boolean; index: number }>({ open: false, index: -1 });
+
+function openRenameDialog(index: number) {
+  if (grid.value.columns[index]) renameDialog.value = { open: true, index };
+}
+
+function onHeaderDblClick(event: CustomEvent<{ index: number; originalEvent?: MouseEvent }>) {
+  const target = event.detail.originalEvent?.target;
+  // Double-clicking the resize handle or filter button keeps its own meaning.
+  if (target instanceof Element && target.closest(".rv-filter, .resizable")) return;
+  openRenameDialog(event.detail.index);
 }
 
 const insertDialog = ref<{ open: boolean; kind: "rows" | "columns"; count: number; target?: MenuTarget }>({ open: false, kind: "rows", count: 1 });
@@ -562,6 +603,7 @@ function columnMenuItems(target: Extract<MenuTarget, { kind: "column" }>): Conte
   const count = target.end - target.start + 1;
   const structure: ContextMenuItem[] = [
     { label: "", separator: true },
+    { label: t("spreadsheet.menu.renameColumn"), icon: PencilLine, action: () => openRenameDialog(index) },
     { label: t("spreadsheet.menu.insertColumnsLeft", { count }, count), icon: ArrowLeftToLine, action: () => insertColumns(target, count, "before") },
     { label: t("spreadsheet.menu.insertColumnsRight", { count }, count), icon: ArrowRightToLine, action: () => insertColumns(target, count, "after") },
     { label: t("spreadsheet.menu.insertColumnsMultiple"), icon: ListPlus, action: () => openInsertDialog(target) },
@@ -656,6 +698,7 @@ defineExpose({ refresh });
             @beforerangeedit="onBeforeRangeEdit"
             @afteredit="onAfterEdit"
             @headerclick="onHeaderClick"
+            @headerdblclick="onHeaderDblClick"
             @clipboardrangecopy="onClipboardRangeCopy"
           />
         </div>
@@ -665,6 +708,7 @@ defineExpose({ refresh });
       </div>
     </div>
     <SpreadsheetInsertDialog v-model:open="insertDialog.open" :kind="insertDialog.kind" :initial-count="insertDialog.count" @insert="onInsertDialogConfirm" />
+    <SpreadsheetRenameColumnDialog v-model:open="renameDialog.open" :initial-name="headers[renameDialog.index] ?? ''" :placeholder="columnLetter(Math.max(renameDialog.index, 0))" @rename="renameColumn(renameDialog.index, $event)" />
     <div v-if="sheets.length > 1" class="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-t px-2">
       <button v-for="sheet in sheets" :key="sheet" type="button" class="shrink-0 rounded px-2 py-0.5 text-xs" :class="sheet === activeSheet ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60'" :disabled="loading" @click="switchSheet(sheet)">
         {{ sheet }}

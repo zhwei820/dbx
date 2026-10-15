@@ -11,8 +11,10 @@ import {
   insertColumnsSplice,
   insertSpreadsheetRows,
   rangeClipboardText,
+  renameSpreadsheetHeader,
   spliceSpreadsheetColumnList,
   spliceSpreadsheetColumns,
+  spreadsheetColumnName,
   spreadsheetColumns,
   spreadsheetSourceToRows,
 } from "../spreadsheetGrid";
@@ -43,6 +45,24 @@ describe("buildSpreadsheetGrid", () => {
 describe("columnLetter", () => {
   it("follows spreadsheet column naming", () => {
     expect([0, 25, 26, 701, 702].map(columnLetter)).toEqual(["A", "Z", "AA", "ZZ", "AAA"]);
+  });
+});
+
+describe("spreadsheet column names", () => {
+  it("shows the column letter for a blank header", () => {
+    expect(spreadsheetColumnName(["id", ""], 0)).toBe("id");
+    expect(spreadsheetColumnName(["id", ""], 1)).toBe("B");
+    expect(spreadsheetColumnName(["id"], 2)).toBe("C");
+  });
+
+  it("renames one header and pads headers out to the grid width", () => {
+    const headers = ["id", "name"];
+
+    expect(renameSpreadsheetHeader(headers, 2, 1, "姓名")).toEqual(["id", "姓名"]);
+    expect(renameSpreadsheetHeader(headers, 4, 3, "extra")).toEqual(["id", "name", "", "extra"]);
+    expect(renameSpreadsheetHeader(headers, 2, 0, "")).toEqual(["", "name"]);
+    expect(renameSpreadsheetHeader(headers, 2, 5, "out")).toEqual(["id", "name"]);
+    expect(headers).toEqual(["id", "name"]);
   });
 });
 

@@ -2606,7 +2606,14 @@ export default {
       insertColumnsMultiple: "Insert multiple columns…",
       duplicateColumns: "Duplicate column | Duplicate {count} columns",
       deleteColumns: "Delete column | Delete {count} columns",
+      renameColumn: "Rename column…",
       appendRow: "Add row",
+    },
+    renameDialog: {
+      title: "Rename column",
+      hint: "Leave empty to show the column letter ({letter}); the saved file keeps the header blank.",
+      name: "Column name",
+      confirm: "Rename",
     },
     insertDialog: {
       rowsTitle: "Insert rows",

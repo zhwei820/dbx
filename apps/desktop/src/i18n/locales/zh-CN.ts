@@ -2520,7 +2520,14 @@ export default withEnglishFallback({
       insertColumnsMultiple: "插入多列…",
       duplicateColumns: "复制 {count} 列为新列",
       deleteColumns: "删除 {count} 列",
+      renameColumn: "重命名列…",
       appendRow: "新增行",
+    },
+    renameDialog: {
+      title: "重命名列",
+      hint: "留空则显示列字母（{letter}），保存的文件中该列名为空。",
+      name: "列名",
+      confirm: "重命名",
     },
     insertDialog: {
       rowsTitle: "插入行",

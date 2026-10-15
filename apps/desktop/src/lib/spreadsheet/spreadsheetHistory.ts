@@ -18,7 +18,7 @@ export interface SpreadsheetRowPatch {
   inserted: { index: number; record: SpreadsheetRecord }[];
 }
 
-export type SpreadsheetChange = { kind: "cells"; cells: SpreadsheetCellChange[] } | { kind: "rows"; patch: SpreadsheetRowPatch } | { kind: "columns"; splice: SpreadsheetColumnSplice; removed: SpreadsheetColumnData[] };
+export type SpreadsheetChange = { kind: "cells"; cells: SpreadsheetCellChange[] } | { kind: "rows"; patch: SpreadsheetRowPatch } | { kind: "columns"; splice: SpreadsheetColumnSplice; removed: SpreadsheetColumnData[] } | { kind: "header"; index: number; before: string; after: string };
 
 export type SpreadsheetHistoryDirection = "undo" | "redo";
 
