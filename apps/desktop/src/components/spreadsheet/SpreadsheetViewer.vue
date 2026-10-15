@@ -744,6 +744,14 @@ async function stepSearch(delta: 1 | -1, inclusive = false) {
 
 watch(searchQuery, () => scheduleSearch(true));
 
+// RevoGrid reads keys from the whole document, so typing in a field outside the grid (such as the find field)
+// would otherwise start editing, or with Backspace clear, the focused cell.
+function onGridBeforeKeydown(event: CustomEvent<{ original: KeyboardEvent }>) {
+  const target = event.detail.original.target;
+  if (!(target instanceof Element) || gridElement()?.contains(target)) return;
+  if (target.closest("input, textarea, select, [contenteditable='true']")) event.preventDefault();
+}
+
 // RevoGrid's vertical scrollbar is native, which macOS hides until the grid scrolls and which is easy to miss.
 // An always-visible overlay thumb drives that same scroll element, so dragging it jumps through the sheet.
 const gridContainerRef = ref<HTMLElement>();
@@ -832,7 +840,7 @@ defineExpose({ refresh, focusSearch });
       </div>
       <CustomContextMenu v-else :items="menuItems" v-slot="{ onContextMenu }">
         <!-- isolate keeps RevoGrid's internal z-indexes under the find panel and scrollbar. -->
-        <div class="spreadsheet-grid isolate h-full w-full" @contextmenu="onGridContextMenu($event, onContextMenu)" @click="onGridClick" @keydown.capture="onGridKeydown">
+        <div class="spreadsheet-grid isolate h-full w-full" @contextmenu="onGridContextMenu($event, onContextMenu)" @click="onGridClick" @keydown.capture="onGridKeydown" @beforekeydown="onGridBeforeKeydown">
           <VGrid
             ref="gridRef"
             class="h-full w-full"
