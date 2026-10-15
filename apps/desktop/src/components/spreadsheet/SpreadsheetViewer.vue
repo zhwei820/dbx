@@ -543,16 +543,19 @@ async function selectRows(anchor: number, row: number) {
   await element.setCellsFocus({ x: 0, y: Math.min(anchor, row) }, { x: lastColumn, y: Math.max(anchor, row) }, "rgCol", "rgRow");
 }
 
-async function copySelectionWithHeaders() {
+async function copySelection(withHeaders: boolean) {
   const element = gridElement();
   if (!element) return;
   try {
     const focused = await element.getFocused();
     const range: GridRange | null = (await element.getSelectedRange()) ?? (focused ? { x: focused.cell.x, y: focused.cell.y, x1: focused.cell.x, y1: focused.cell.y } : null);
     if (!range) return;
+    // Columns picked from their headers copy with the column names, as onClipboardRangeCopy does.
+    const selected = headerSelection;
+    const headerRange = !!selected && range.y === 0 && range.x === selected.x && range.x1 === selected.x1 && range.y1 === selected.y1;
     const rows = (await element.getVisibleSource()) as Record<string, unknown>[];
-    await copyToClipboard(rangeClipboardText(rows, grid.value.columns, range, true));
-    toast(t("spreadsheet.copiedWithHeaders"));
+    await copyToClipboard(rangeClipboardText(rows, grid.value.columns, range, withHeaders || headerRange));
+    if (withHeaders) toast(t("spreadsheet.copiedWithHeaders"));
   } catch (e: any) {
     toast(t("spreadsheet.copyFailed", { message: e?.message || String(e) }), 5000);
   }
@@ -566,7 +569,6 @@ async function selectAllCells() {
   if (rowCount > 0) await element.setCellsFocus({ x: 0, y: 0 }, { x: lastColumn, y: rowCount - 1 }, "rgCol", "rgRow");
 }
 
-// Plain Mod+C keeps RevoGrid's paste-friendly copy; Mod+Shift+C adds the column names.
 // Mod+A is handled here because RevoGrid only selects all when a multi-cell range already exists.
 // Mod+Z / Mod+Shift+Z / Ctrl+Y step the sheet history; inside an open cell editor they stay native text undo.
 function onGridKeydown(event: KeyboardEvent) {
@@ -577,15 +579,34 @@ function onGridKeydown(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
     stepHistory(key === "z" && !event.shiftKey ? "undo" : "redo");
-  } else if (event.code === "KeyC" && event.shiftKey) {
-    event.preventDefault();
-    event.stopPropagation();
-    void copySelectionWithHeaders();
   } else if (event.code === "KeyA" && !event.shiftKey) {
     event.preventDefault();
     event.stopPropagation();
     void selectAllCells();
   }
+}
+
+const viewerRef = ref<HTMLElement>();
+
+// RevoGrid copies through the native copy event, which WebKit (the macOS and Linux webviews) only fires when the
+// page has a text selection, so Mod+C on selected cells copied nothing there. Mod+C copies the cells here instead;
+// Mod+Shift+C adds the column names. Listening on the document also covers focus left on the body or find field.
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.code !== "KeyC" || !(event.metaKey || event.ctrlKey) || event.altKey || event.defaultPrevented) return;
+  const target = event.target instanceof Element ? event.target : null;
+  const onPage = !target || target === document.body || target === document.documentElement;
+  if (!onPage && !viewerRef.value?.contains(target)) return;
+  // An open cell editor and any selected text keep the native copy.
+  if (target?.closest("input, textarea, [contenteditable='true']") && gridElement()?.contains(target)) return;
+  if (hasTextSelection(target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void copySelection(event.shiftKey);
+}
+
+function hasTextSelection(target: Element | null) {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return target.selectionStart !== target.selectionEnd;
+  return !(window.getSelection()?.isCollapsed ?? true);
 }
 
 function menuItems(): ContextMenuItem[] {
@@ -806,9 +827,13 @@ function onScrollbarWheel(event: WheelEvent) {
   if (rowScroller.value) rowScroller.value.scrollTop += event.deltaY;
 }
 
-onMounted(() => void load());
+onMounted(() => {
+  document.addEventListener("keydown", onDocumentKeydown);
+  void load();
+});
 
 onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onDocumentKeydown);
   clearTimeout(searchTimer);
   rowScroller.value?.removeEventListener("scroll", onRowScroll);
   scrollerResizeObserver?.disconnect();
@@ -818,7 +843,7 @@ defineExpose({ refresh, focusSearch });
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col">
+  <div ref="viewerRef" class="flex h-full min-h-0 flex-col">
     <div class="flex h-9 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground">
       <span class="truncate" :title="filePath">{{ filePath }}</span>
       <span class="shrink-0">· {{ t("spreadsheet.rowCount", { count: grid.source.length }) }}</span>
