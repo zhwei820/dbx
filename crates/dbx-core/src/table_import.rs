@@ -2595,8 +2595,10 @@ fn parse_xlsx_preview_file_with_options(
     let start_column = observed_min_column;
     let observed_end_column = observed_max_column.max(start_column);
     let observed_column_count = observed_end_column.saturating_sub(start_column).saturating_add(1);
-    let preview_row_count = requested_last_row
-        .saturating_sub(row_range.data_start_row.max(start_row))
+    let first_preview_row = row_range.data_start_row.max(start_row);
+    let last_preview_row = requested_last_row.min(observed_max_row);
+    let preview_row_count = last_preview_row
+        .saturating_sub(first_preview_row)
         .saturating_add(1)
         .saturating_add(usize::from(row_range.title_row.is_some()));
     if observed_column_count.saturating_mul(preview_row_count) > MAX_FAST_PREVIEW_CELLS {
@@ -2635,8 +2637,6 @@ fn parse_xlsx_preview_file_with_options(
         return Err("Import file has no columns in the selected row range".to_string());
     }
 
-    let first_preview_row = row_range.data_start_row.max(start_row);
-    let last_preview_row = requested_last_row.min(observed_max_row);
     if last_preview_row < first_preview_row {
         return Err("Import file has no data rows in the selected row range".to_string());
     }
@@ -7545,6 +7545,19 @@ mod tests {
     #[test]
     fn xlsx_absolute_rows_streaming() {
         assert_xlsx_absolute_row_selection("stream");
+    }
+
+    #[test]
+    fn xlsx_preview_cell_limit_counts_existing_rows_not_requested_limit() {
+        let path = std::env::temp_dir().join(format!("dbx-large-preview-limit-{}.xlsx", uuid::Uuid::new_v4()));
+        std::fs::write(&path, build_styled_test_xlsx(false, &[("A1", 0, 1.0), ("F1", 0, 2.0), ("A2", 0, 3.0)]))
+            .unwrap();
+        let (preview, _) =
+            parse_xlsx_preview_file_with_options(&path.to_string_lossy(), &TableImportParseOptions::default(), 200_000)
+                .unwrap();
+        assert_eq!(preview.columns.len(), 6);
+        assert_eq!(preview.rows.len(), 1);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
