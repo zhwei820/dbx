@@ -4,31 +4,28 @@ use std::sync::Mutex;
 // Keep in sync with the "Spreadsheet" entry of bundle.fileAssociations in tauri.conf.json.
 const SPREADSHEET_EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xls", "csv", "tsv"];
 
-#[derive(Default)]
-pub struct ExternalSpreadsheetOpenState {
-    pending: Mutex<Vec<String>>,
+// A process-wide queue rather than managed state: on a macOS cold launch the document's
+// RunEvent::Opened arrives before setup() runs, when no managed state exists yet.
+static PENDING_SPREADSHEET_FILES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn push_pending_spreadsheet_files(paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    if let Ok(mut pending) = PENDING_SPREADSHEET_FILES.lock() {
+        pending.extend(paths);
+    }
 }
 
-impl ExternalSpreadsheetOpenState {
-    pub fn push(&self, paths: Vec<String>) {
-        if paths.is_empty() {
-            return;
-        }
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.extend(paths);
-        }
-    }
-
-    fn drain(&self) -> Vec<String> {
-        self.pending.lock().map(|mut pending| pending.drain(..).collect()).unwrap_or_default()
-    }
+fn drain_pending_spreadsheet_files() -> Vec<String> {
+    PENDING_SPREADSHEET_FILES.lock().map(|mut pending| pending.drain(..).collect()).unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn pending_open_spreadsheet_files(state: tauri::State<'_, ExternalSpreadsheetOpenState>) -> Vec<String> {
+pub fn pending_open_spreadsheet_files() -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut paths = spreadsheet_file_paths_from_args(std::env::args().skip(1), &cwd);
-    paths.extend(state.drain());
+    paths.extend(drain_pending_spreadsheet_files());
     dedupe_paths(paths)
 }
 
@@ -110,10 +107,9 @@ mod tests {
 
     #[test]
     fn drains_pending_spreadsheet_paths_once() {
-        let state = ExternalSpreadsheetOpenState::default();
-        state.push(vec!["/tmp/a.csv".to_string()]);
+        push_pending_spreadsheet_files(vec!["/tmp/a.csv".to_string()]);
 
-        assert_eq!(state.drain(), vec!["/tmp/a.csv"]);
-        assert!(state.drain().is_empty());
+        assert_eq!(drain_pending_spreadsheet_files(), vec!["/tmp/a.csv"]);
+        assert!(drain_pending_spreadsheet_files().is_empty());
     }
 }

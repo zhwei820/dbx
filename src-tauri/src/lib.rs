@@ -1471,9 +1471,7 @@ pub fn run() {
             let spreadsheet_paths =
                 commands::external_spreadsheet::spreadsheet_file_paths_from_args(args.clone(), std::path::Path::new(&cwd));
             if !spreadsheet_paths.is_empty() {
-                if let Some(state) = app.try_state::<commands::external_spreadsheet::ExternalSpreadsheetOpenState>() {
-                    state.push(spreadsheet_paths.clone());
-                }
+                commands::external_spreadsheet::push_pending_spreadsheet_files(spreadsheet_paths.clone());
                 let _ = app.emit("dbx-open-spreadsheet-files", spreadsheet_paths);
             }
 
@@ -1666,7 +1664,6 @@ pub fn run() {
             app.manage(commands::saved_sql::SavedSqlStorageState { data_dir: data_dir.clone() });
             app.manage(commands::external_sql::ExternalSqlOpenState::default());
             app.manage(commands::external_db::ExternalDbOpenState::default());
-            app.manage(commands::external_spreadsheet::ExternalSpreadsheetOpenState::default());
             app.manage(commands::deep_link::DeepLinkOpenState::default());
             app.manage(commands::update::PendingUpdateState::default());
             app.manage(commands::ssh_prompt::SshPromptState::new());
@@ -2722,11 +2719,7 @@ pub fn run() {
                     .map(|path| path.to_string_lossy().to_string())
                     .collect();
                 if !spreadsheet_paths.is_empty() {
-                    if let Some(state) =
-                        app_handle.try_state::<commands::external_spreadsheet::ExternalSpreadsheetOpenState>()
-                    {
-                        state.push(spreadsheet_paths.clone());
-                    }
+                    commands::external_spreadsheet::push_pending_spreadsheet_files(spreadsheet_paths.clone());
                     let _ = app_handle.emit("dbx-open-spreadsheet-files", spreadsheet_paths);
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.show();

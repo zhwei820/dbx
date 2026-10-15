@@ -249,4 +249,11 @@ describe("openTabsPersistence originalSql round-trip", () => {
       currentUri: "s3://bucket/reports/",
     });
   });
+
+  it("restores spreadsheet tabs by file path even though they have no connection", () => {
+    const saved = serializeOpenTabs([queryTab({ id: "s1", title: "report.xlsx", connectionId: "", database: "", mode: "spreadsheet", spreadsheet: { filePath: "/data/report.xlsx" } }), queryTab({ id: "s2", title: "lost.xlsx", connectionId: "", database: "", mode: "spreadsheet" })]);
+    const restored = restoreOpenTabsPayload({ tabs: saved, activeTabId: "s1" }, { validConnectionIds: ["c1"] }).tabs;
+
+    expect(restored.map((tab) => [tab.id, tab.spreadsheet?.filePath])).toEqual([["s1", "/data/report.xlsx"]]);
+  });
 });

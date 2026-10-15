@@ -49,6 +49,7 @@ export interface SavedOpenTab {
   mode?: QueryTab["mode"];
   pluginWorkbench?: QueryTab["pluginWorkbench"];
   pluginFilesystem?: QueryTab["pluginFilesystem"];
+  spreadsheet?: QueryTab["spreadsheet"];
   autoCommit?: boolean;
   mqTenant?: string;
   mqInitialTab?: QueryTab["mqInitialTab"];
@@ -191,6 +192,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     mode: tab.mode,
     ...(tab.pluginWorkbench ? { pluginWorkbench: tab.pluginWorkbench } : {}),
     ...(tab.pluginFilesystem ? { pluginFilesystem: tab.pluginFilesystem } : {}),
+    ...(tab.spreadsheet ? { spreadsheet: { filePath: tab.spreadsheet.filePath } } : {}),
     ...(tab.mode === "query" && tab.autoCommit !== undefined ? { autoCommit: tab.autoCommit } : {}),
     ...(tab.mqTenant !== undefined ? { mqTenant: tab.mqTenant } : {}),
     ...(tab.mqInitialTab !== undefined ? { mqInitialTab: tab.mqInitialTab } : {}),
@@ -246,6 +248,8 @@ function restoreOpenTabsArray(parsed: unknown, rawActiveTabId: string | null, op
       const mode = tab.mode ?? "query";
       if (options.queryOnly && mode !== "query") return false;
       if (options.filter === "pinned" && !tab.pinned) return false;
+      // Spreadsheet tabs are bound to a file, not a connection; without the path they cannot render.
+      if (mode === "spreadsheet") return typeof tab.spreadsheet?.filePath === "string" && tab.spreadsheet.filePath !== "";
       if (mode !== "query" && validConnectionIds && !validConnectionIds.has(tab.connectionId)) return false;
       return true;
     });

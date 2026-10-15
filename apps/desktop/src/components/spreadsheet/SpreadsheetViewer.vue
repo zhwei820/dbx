@@ -334,6 +334,7 @@ defineExpose({ refresh });
             :columns="grid.columns"
             :source="grid.source"
             :readonly="false"
+            :apply-on-close="true"
             :resize="true"
             :range="true"
             :filter="true"
