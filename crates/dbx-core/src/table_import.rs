@@ -2113,6 +2113,14 @@ struct XlsxPreviewRawCell {
     has_inline_value: bool,
 }
 
+impl XlsxPreviewRawCell {
+    // Mirrors calamine's worksheet_range, which drops value-less cells, so style-only cells
+    // (whole formatted columns, cleared contents) never widen the detected range.
+    fn has_data(&self) -> bool {
+        self.has_inline_value || (self.has_value && !(self.value.is_empty() && self.cell_type.as_deref() == Some("n")))
+    }
+}
+
 fn xlsx_dimension_bounds(reference: &str) -> Option<((usize, usize), (usize, usize))> {
     let mut parts = reference.split(':');
     let start = xlsx_cell_ref_position(parts.next()?)?;
@@ -2496,7 +2504,6 @@ fn parse_xlsx_preview_file_with_options(
                     {
                         break;
                     }
-                    observed_max_row = observed_max_row.max(current_row);
                 }
                 Ok(Event::Empty(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => {
                     let position = xml_attr_value(&reader, &element, b"r")
@@ -2505,13 +2512,7 @@ fn parse_xlsx_preview_file_with_options(
                         .unwrap_or_else(|| (current_row.max(1), current_column.saturating_add(1).max(1)));
                     current_row = position.0;
                     current_column = position.1;
-                    observed_min_row = observed_min_row.min(position.0);
-                    requested_last_row = preview_end_from(row_range.data_start_row.max(observed_min_row));
-                    observed_min_column = observed_min_column.min(position.1);
-                    observed_max_row = observed_max_row.max(position.0);
-                    observed_max_column = observed_max_column.max(position.1);
                 }
-                Ok(Event::Empty(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => continue,
                 Ok(Event::Start(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => {
                     let position = xml_attr_value(&reader, &element, b"r")
                         .as_deref()
@@ -2559,7 +2560,7 @@ fn parse_xlsx_preview_file_with_options(
                     inline_phonetic_depth = inline_phonetic_depth.saturating_sub(1);
                 }
                 Ok(Event::End(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => {
-                    if let Some((row, column)) = current_position.take() {
+                    if let Some((row, column)) = current_position.take().filter(|_| current_cell.has_data()) {
                         observed_min_row = observed_min_row.min(row);
                         requested_last_row = preview_end_from(row_range.data_start_row.max(observed_min_row));
                         observed_min_column = observed_min_column.min(column);
@@ -2943,7 +2944,14 @@ impl XlsxStreamRowsState {
     ) -> Result<(), String> {
         self.initialize_range(absolute_row, absolute_column);
         if self.current_row != Some(absolute_row) {
+            let previous_row = self.current_row;
             self.flush_current_row(progress)?;
+            // Rows with no valued cells inside the range are still rows in calamine and the preview.
+            if let Some(previous_row) = previous_row {
+                for gap_row in previous_row.saturating_add(1)..absolute_row {
+                    self.flush_row(gap_row, Vec::new(), progress)?;
+                }
+            }
             self.current_row = Some(absolute_row);
         }
         let column_offset = absolute_column.checked_sub(self.start_column).ok_or_else(|| {
@@ -3181,7 +3189,6 @@ fn stream_xlsx_rows_to_channel_with_control(
                     .unwrap_or_else(|| (current_row.max(1), current_column.saturating_add(1).max(1)));
                 current_row = position.0;
                 current_column = position.1;
-                rows.push_cell(position.0, position.1, serde_json::Value::Null, progress)?;
             }
             Ok(Event::Start(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => {
                 let position = xml_attr_value(&reader, &element, b"r")
@@ -3226,7 +3233,9 @@ fn stream_xlsx_rows_to_channel_with_control(
                 inline_phonetic_depth = inline_phonetic_depth.saturating_sub(1);
             }
             Ok(Event::End(element)) if xml_local_name_eq(element.name().as_ref(), b"c") => {
-                if let Some((row, column)) = current_position.take() {
+                // Value-less cells are skipped like the preview and calamine do; letting one anchor the
+                // range or open a row would misalign columns or append all-null rows.
+                if let Some((row, column)) = current_position.take().filter(|_| current_cell.has_data()) {
                     let format_as_text = rows.is_text_source_column(row, column, &text_source_columns);
                     let value = xlsx_stream_cell_value(
                         &current_cell,
@@ -7703,6 +7712,69 @@ mod tests {
         assert_eq!(preview.columns, parsed.columns);
         assert_eq!(streamed_columns, parsed.columns);
         assert_eq!(parsed.rows, vec![expected_row.clone()]);
+        assert_eq!(preview.rows, parsed.rows);
+        assert_eq!(streamed_rows, parsed.rows);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn xlsx_style_only_cells_do_not_widen_range_in_preview_parse_and_streaming() {
+        let path = std::env::temp_dir().join(format!("dbx-table-import-style-only-{}.xlsx", uuid::Uuid::new_v4()));
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:Z50000"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"/>
+      <c r="B1" t="inlineStr"><is><t>id</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>name</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"></c>
+      <c r="B2"><v>1</v></c>
+      <c r="D2" s="1"></c>
+      <c r="E2" s="1" t="n"><v></v></c>
+    </row>
+    <row r="3"><c r="B3" s="1"/></row>
+    <row r="4">
+      <c r="B4"><v>2</v></c>
+      <c r="C4" t="inlineStr"><is><t>b</t></is></c>
+    </row>
+    <row r="40000"/>
+    <row r="50000"><c r="Z50000" s="1"/></row>
+  </sheetData>
+</worksheet>"#;
+        std::fs::write(&path, build_preview_test_xlsx(sheet_xml, None)).unwrap();
+        let options = TableImportParseOptions::default();
+
+        let parsed = parse_xlsx_file_with_options(&path.to_string_lossy(), &options, 200_000).unwrap();
+        let (preview, _) = parse_xlsx_preview_file_with_options(&path.to_string_lossy(), &options, 200_000).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+        stream_xlsx_rows_to_channel(
+            &path.to_string_lossy(),
+            &options,
+            500,
+            Some(preview.columns.clone()),
+            HashSet::new(),
+            false,
+            sender,
+        )
+        .unwrap();
+        let mut streamed_rows = Vec::new();
+        while let Some(message) = receiver.blocking_recv() {
+            if let XlsxStreamMessage::Rows(rows) = message.unwrap() {
+                streamed_rows.extend(rows);
+            }
+        }
+
+        let expected_rows = vec![
+            vec![serde_json::json!(1), serde_json::Value::Null],
+            vec![serde_json::Value::Null, serde_json::Value::Null],
+            vec![serde_json::json!(2), serde_json::json!("b")],
+        ];
+        assert_eq!(parsed.columns, vec!["id", "name"]);
+        assert_eq!(preview.columns, parsed.columns);
+        assert_eq!(parsed.rows, expected_rows);
         assert_eq!(preview.rows, parsed.rows);
         assert_eq!(streamed_rows, parsed.rows);
         let _ = std::fs::remove_file(path);
