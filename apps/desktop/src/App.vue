@@ -1008,6 +1008,7 @@ const { setupTauriListeners, cleanupTauriListeners } = useTauriEvents({
   openTableTarget,
   openSqlFilePath,
   openDbFilePath,
+  openSpreadsheetFilePath,
   openConnectionDeepLink,
   closeActiveSurface,
   openAiConfigDeepLink,
@@ -2335,6 +2336,23 @@ async function openDbFilePath(path: string) {
     toast(t("welcome.fileOpened", { name }));
   } catch (e: any) {
     toast(t("toolbar.sqlOpenFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+async function openSpreadsheetFilePath(path: string) {
+  if (!isTauriRuntime()) return;
+  await desktopOpenTabsRestorationBarrier?.settled;
+  queryStore.openSpreadsheetFile(path);
+}
+
+async function openPendingSpreadsheetFiles() {
+  if (!isTauriRuntime()) return;
+  try {
+    for (const path of await api.pendingOpenSpreadsheetFiles()) {
+      await openSpreadsheetFilePath(path);
+    }
+  } catch {
+    /* ignore startup file-open probing errors */
   }
 }
 
@@ -3720,6 +3738,7 @@ onMounted(async () => {
   void setupDetachedWindowEvents();
   void openPendingSqlFiles();
   void openPendingDbFiles();
+  void openPendingSpreadsheetFiles();
   void openPendingConnectionLinks();
   void openPendingAiConfigLinks();
   void openPendingPluginInstallLinks();

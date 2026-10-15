@@ -418,6 +418,7 @@ export const inspectSqlFileTables = forward("inspectSqlFileTables");
 export const listenSqlFileProgress = forward("listenSqlFileProgress");
 export const pendingOpenSqlFiles = forward("pendingOpenSqlFiles");
 export const pendingOpenDbFiles = forward("pendingOpenDbFiles");
+export const pendingOpenSpreadsheetFiles = forward("pendingOpenSpreadsheetFiles");
 export const pendingOpenConnectionLinks = forward("pendingOpenConnectionLinks");
 export const pendingOpenAiConfigLinks = forward("pendingOpenAiConfigLinks");
 export const pendingOpenPluginInstallLinks = forward("pendingOpenPluginInstallLinks");

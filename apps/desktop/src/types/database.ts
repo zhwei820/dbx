@@ -1706,7 +1706,12 @@ export interface QueryTab {
     | "xugu-dashboard"
     | "dolt-version-control"
     | "plugin-workbench"
-    | "plugin-filesystem";
+    | "plugin-filesystem"
+    | "spreadsheet";
+  /** Local xlsx/xls/csv/tsv file shown read-only in the spreadsheet viewer. */
+  spreadsheet?: {
+    filePath: string;
+  };
   pluginWorkbench?: {
     pluginId: string;
     contributionId: string;

@@ -1468,6 +1468,15 @@ pub fn run() {
                 let _ = app.emit("dbx-open-sql-files", paths);
             }
 
+            let spreadsheet_paths =
+                commands::external_spreadsheet::spreadsheet_file_paths_from_args(args.clone(), std::path::Path::new(&cwd));
+            if !spreadsheet_paths.is_empty() {
+                if let Some(state) = app.try_state::<commands::external_spreadsheet::ExternalSpreadsheetOpenState>() {
+                    state.push(spreadsheet_paths.clone());
+                }
+                let _ = app.emit("dbx-open-spreadsheet-files", spreadsheet_paths);
+            }
+
             let db_paths = commands::external_db::db_file_paths_from_args(args, std::path::Path::new(&cwd));
             if !db_paths.is_empty() {
                 if let Some(state) = app.try_state::<commands::external_db::ExternalDbOpenState>() {
@@ -1657,6 +1666,7 @@ pub fn run() {
             app.manage(commands::saved_sql::SavedSqlStorageState { data_dir: data_dir.clone() });
             app.manage(commands::external_sql::ExternalSqlOpenState::default());
             app.manage(commands::external_db::ExternalDbOpenState::default());
+            app.manage(commands::external_spreadsheet::ExternalSpreadsheetOpenState::default());
             app.manage(commands::deep_link::DeepLinkOpenState::default());
             app.manage(commands::update::PendingUpdateState::default());
             app.manage(commands::ssh_prompt::SshPromptState::new());
@@ -2047,6 +2057,7 @@ pub fn run() {
             commands::list_sql_files::rename_sql_file_in_folder,
             commands::list_sql_files::delete_sql_file_in_folder,
             commands::external_db::pending_open_db_files,
+            commands::external_spreadsheet::pending_open_spreadsheet_files,
             commands::keychain::read_keychain_password,
             commands::keychain::read_keychain_passwords,
             commands::deep_link::pending_open_connection_links,
@@ -2698,6 +2709,25 @@ pub fn run() {
                         state.push(paths.clone());
                     }
                     let _ = app_handle.emit("dbx-open-sql-files", paths);
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+
+                let spreadsheet_paths: Vec<String> = urls
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter(|path| commands::external_spreadsheet::is_spreadsheet_file_path(path))
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect();
+                if !spreadsheet_paths.is_empty() {
+                    if let Some(state) =
+                        app_handle.try_state::<commands::external_spreadsheet::ExternalSpreadsheetOpenState>()
+                    {
+                        state.push(spreadsheet_paths.clone());
+                    }
+                    let _ = app_handle.emit("dbx-open-spreadsheet-files", spreadsheet_paths);
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();

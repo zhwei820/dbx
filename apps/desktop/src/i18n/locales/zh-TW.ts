@@ -2466,6 +2466,12 @@ export default withEnglishFallback({
     multiDbTargets: "目標 {completed}/{total}，成功 {success}，失敗 {failed}",
     openTask: "開啟工作",
   },
+  spreadsheet: {
+    rowCount: "{count} 列",
+    truncated: "僅顯示前 {max} 列",
+    reload: "重新載入檔案",
+    loadFailed: "開啟檔案失敗：{message}",
+  },
   welcome: {
     title: "資料庫工作檯",
     subtitle: "選擇左側連線以瀏覽結構，或直接開啟查詢分頁。",

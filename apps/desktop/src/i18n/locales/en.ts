@@ -2567,6 +2567,12 @@ export default {
     failureDetailCopied: "Failure details copied",
     failureDetailCopyFailed: "Failed to copy failure details: {message}",
   },
+  spreadsheet: {
+    rowCount: "{count} rows",
+    truncated: "Showing the first {max} rows only",
+    reload: "Reload file",
+    loadFailed: "Failed to open file: {message}",
+  },
   welcome: {
     title: "Database Workspace",
     subtitle: "Choose a connection on the left to browse schema, or open a query tab directly.",

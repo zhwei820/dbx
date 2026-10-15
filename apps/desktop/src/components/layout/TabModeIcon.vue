@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, AlertTriangle, Braces, CalendarClock, Clock, Code2, Database, Eye, FileCode, Gauge, KeyRound, Link2, ListTree, Network, Package, PencilRuler, ScrollText, ShieldCheck, Table, TableProperties, UsersRound, Zap } from "@lucide/vue";
+import { Activity, AlertTriangle, Braces, CalendarClock, Clock, Code2, Database, Eye, FileCode, FileSpreadsheet, Gauge, KeyRound, Link2, ListTree, Network, Package, PencilRuler, ScrollText, ShieldCheck, Table, TableProperties, UsersRound, Zap } from "@lucide/vue";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import PluginIcon from "@/components/plugins/PluginIcon.vue";
 import { isEventObjectBrowserTab, tabDatabaseIconType } from "@/lib/tabs/tabPresentation";
@@ -41,5 +41,6 @@ defineProps<{ tab: QueryTab }>();
   <Gauge v-else-if="tab.mode === 'dolt-version-control'" />
   <PluginIcon v-else-if="tab.mode === 'plugin-workbench' && tab.pluginWorkbench" :plugin-id="tab.pluginWorkbench.pluginId" :contribution-id="tab.pluginWorkbench.contributionId" />
   <PluginIcon v-else-if="tab.mode === 'plugin-filesystem' && tab.pluginFilesystem" :plugin-id="tab.pluginFilesystem.pluginId" :contribution-id="tab.pluginFilesystem.providerId" />
+  <FileSpreadsheet v-else-if="tab.mode === 'spreadsheet'" />
   <Code2 v-else />
 </template>

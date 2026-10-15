@@ -47,6 +47,12 @@
         "mimeType": "application/sql"
       },
       {
+        "ext": ["xlsx", "xlsm", "xls", "csv", "tsv"],
+        "name": "Spreadsheet",
+        "description": "Spreadsheet",
+        "role": "Viewer"
+      },
+      {
         "ext": ["db", "sqlite", "sqlite3", "duckdb"],
         "name": "Database File",
         "description": "Database file",

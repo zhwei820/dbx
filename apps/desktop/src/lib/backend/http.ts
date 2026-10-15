@@ -2488,6 +2488,10 @@ export async function pendingOpenDbFiles(): Promise<string[]> {
   return [];
 }
 
+export async function pendingOpenSpreadsheetFiles(): Promise<string[]> {
+  return [];
+}
+
 export async function pendingOpenConnectionLinks(): Promise<string[]> {
   return [];
 }

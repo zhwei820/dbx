@@ -3541,6 +3541,28 @@ export const useQueryStore = defineStore("query", () => {
     return registerOpenTab(tab);
   }
 
+  function openSpreadsheetFile(filePath: string) {
+    const existing = tabs.value.find((tab) => tab.mode === "spreadsheet" && tab.spreadsheet?.filePath === filePath);
+    if (existing) {
+      if (!groupForTab(existing.id)) ensureTabInWorkspace(existing.id);
+      switchTab(existing.id);
+      return existing.id;
+    }
+    const tab: QueryTab = {
+      id: uuid(),
+      title: filePath.split(/[\\/]/).pop() || filePath,
+      connectionId: "",
+      database: "",
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "spreadsheet",
+      spreadsheet: { filePath },
+    };
+    return registerOpenTab(tab);
+  }
+
   async function openPluginConnection(connectionId: string) {
     const connectionStore = useConnectionStore();
     const connection = connectionStore.getConfig(connectionId);
@@ -8798,6 +8820,7 @@ export const useQueryStore = defineStore("query", () => {
     openNacosAdmin,
     openPluginWorkbench,
     openPluginFilesystem,
+    openSpreadsheetFile,
     reconnectRestoredPluginTabs,
     openPluginConnection,
     clearNacosNavigationTarget,

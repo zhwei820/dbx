@@ -19,6 +19,7 @@ pub mod docs;
 pub mod document_cmd;
 pub mod etcd_cmd;
 pub mod external_db;
+pub mod external_spreadsheet;
 pub mod external_sql;
 pub mod fs_open;
 pub mod hbase_cmd;

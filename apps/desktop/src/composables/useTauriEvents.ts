@@ -7,6 +7,7 @@ export function useTauriEvents(deps: {
   openTableTarget: (target: NavigationTarget) => Promise<void>;
   openSqlFilePath: (path: string) => Promise<void>;
   openDbFilePath: (path: string) => Promise<void>;
+  openSpreadsheetFilePath: (path: string) => Promise<void>;
   openConnectionDeepLink: (url: string) => Promise<void>;
   openAiConfigDeepLink: (url: string) => Promise<void>;
   openPluginInstallDeepLink: (url: string) => Promise<void>;
@@ -118,6 +119,17 @@ export function useTauriEvents(deps: {
             focusCurrentWindow();
           } catch (e) {
             console.error("[DBX] dbx-open-sql-files error:", e);
+          }
+        }).then((unlisten) => unlistenHandles.push(unlisten));
+
+        listen<string[]>("dbx-open-spreadsheet-files", async (event) => {
+          try {
+            for (const path of event.payload) {
+              await deps.openSpreadsheetFilePath(path);
+            }
+            focusCurrentWindow();
+          } catch (e) {
+            console.error("[DBX] dbx-open-spreadsheet-files error:", e);
           }
         }).then((unlisten) => unlistenHandles.push(unlisten));
 

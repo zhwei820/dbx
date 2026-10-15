@@ -16,6 +16,10 @@ function isSqlFilePath(path: string): boolean {
   return /\.sql$/i.test(path);
 }
 
+function isSpreadsheetFilePath(path: string): boolean {
+  return /\.(xlsx|xlsm|xls|csv|tsv)$/i.test(path);
+}
+
 function getDataFileQuery(path: string): Promise<string | undefined> {
   return api.buildDroppedFilePreviewSql({ path });
 }
@@ -56,6 +60,11 @@ export function useFileDrop() {
         if (handledByPanel) return;
         for (const path of event.payload.paths) {
           const name = path.split("/").pop()?.split("\\").pop() || path;
+
+          if (isSpreadsheetFilePath(path)) {
+            queryStore.openSpreadsheetFile(path);
+            continue;
+          }
 
           const dataQuery = await getDataFileQuery(path);
           if (dataQuery) {

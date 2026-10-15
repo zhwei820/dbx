@@ -2481,6 +2481,12 @@ export default withEnglishFallback({
     multiDbTargets: "目标 {completed}/{total}，成功 {success}，失败 {failed}",
     openTask: "打开任务",
   },
+  spreadsheet: {
+    rowCount: "{count} 行",
+    truncated: "仅显示前 {max} 行",
+    reload: "重新加载文件",
+    loadFailed: "打开文件失败：{message}",
+  },
   welcome: {
     title: "数据库工作台",
     subtitle: "选择左侧连接开始浏览结构，或直接创建查询标签页。DBX 支持多种数据库、查询历史、数据表格编辑和 AI SQL 助手。",

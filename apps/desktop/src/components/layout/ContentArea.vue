@@ -130,6 +130,7 @@ const DamengJobAdmin = defineAsyncComponent(() => import("@/components/admin/Dam
 const DamengUserAdmin = defineAsyncComponent(() => import("@/components/admin/DamengUserAdmin.vue"));
 const DamengRoleAdmin = defineAsyncComponent(() => import("@/components/admin/DamengRoleAdmin.vue"));
 const PluginFilesystemTab = defineAsyncComponent(() => import("@/components/plugins/PluginFilesystemTab.vue"));
+const SpreadsheetViewer = defineAsyncComponent(() => import("@/components/spreadsheet/SpreadsheetViewer.vue"));
 const ExplainPlanViewer = defineAsyncComponent(() => import("@/components/explain/ExplainPlanViewer.vue"));
 const QueryChart = defineAsyncComponent(() => import("@/components/chart/QueryChart.vue"));
 import { useQueryStore } from "@/stores/queryStore";
@@ -330,6 +331,7 @@ const consulWorkspaceRef = ref<SearchableBrowserHandle>();
 const databaseBrowserRef = ref<SearchableBrowserHandle>();
 const objectBrowserRef = ref<SearchableBrowserHandle>();
 const pluginFilesystemTabRef = ref<{ refresh: () => Promise<unknown> }>();
+const spreadsheetViewerRef = ref<{ refresh: () => void }>();
 const activeTableMeta = computed(() => props.activeTab.tableMeta);
 const activeDataTabTableMeta = computed(() => tableMetaForDataTab(props.activeTab));
 const activeResultExecutionTarget = computed(() => queryStore.activeResultExecutionTarget(props.activeTab.id));
@@ -1008,6 +1010,10 @@ function refreshData(): boolean {
   if (props.activeTab.mode === "databases") return databaseBrowserRef.value?.refresh?.() ?? false;
   if (props.activeTab.mode === "plugin-filesystem") {
     void pluginFilesystemTabRef.value?.refresh();
+    return true;
+  }
+  if (props.activeTab.mode === "spreadsheet") {
+    spreadsheetViewerRef.value?.refresh();
     return true;
   }
   // Restored data tabs intentionally omit row data, so refresh must work before DataGrid mounts.
@@ -2695,6 +2701,9 @@ defineExpose({
           :initial-uri="activeTab.pluginFilesystem.currentUri"
         />
       </div>
+    </template>
+    <template v-else-if="activeTab.mode === 'spreadsheet' && activeTab.spreadsheet">
+      <SpreadsheetViewer ref="spreadsheetViewerRef" :key="activeTab.id" :file-path="activeTab.spreadsheet.filePath" />
     </template>
     <template v-else-if="activeTab.mode === 'databases' && activeConnection">
       <div class="min-w-0 flex-1 min-h-0">
