@@ -1,7 +1,7 @@
 import type { DatabaseType } from "@/types/database";
 import { isSchemaAware, usesTreeSchemaMode } from "@/lib/database/databaseFeatureSupport";
 
-export type SyntheticEditKey = "oracle-rowid" | "xugu-rowid" | "neo4j-element-id";
+export type SyntheticEditKey = "oracle-rowid" | "xugu-rowid" | "postgres-ctid" | "neo4j-element-id";
 
 export interface TableDataCapability {
   insert: boolean;
@@ -88,9 +88,24 @@ const NAVICAT_STYLE_TABLE_DATA_TYPES = new Set<DatabaseType>([
   "sundb",
   "oscar",
   "databend",
+  "iris",
 ]);
 
 const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<DatabaseCapability>>> = {
+  postgres: {
+    // CTID is injected only by base-table data previews; it is not a schema key.
+    syntheticKey: "postgres-ctid",
+  },
+  duckdb: {
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: false,
+      deleteRequiresPrimaryKey: false,
+      keylessRowPredicate: true,
+      requiresTransactionalTableForExistingRows: false,
+      transaction: false,
+    },
+  },
   kyuubi: {
     tableData: {
       insert: false,
@@ -131,6 +146,16 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
       keylessRowPredicate: true,
       requiresTransactionalTableForExistingRows: true,
       transaction: false,
+    },
+  },
+  transwarp: {
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: false,
+      deleteRequiresPrimaryKey: false,
+      keylessRowPredicate: true,
+      requiresTransactionalTableForExistingRows: true,
+      transaction: true,
     },
   },
   jdbc: {
@@ -233,6 +258,25 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
       existingRowsReadonly: true,
       transaction: false,
       readonly: true,
+    },
+  },
+  salesforce: {
+    // SOQL has no DML. A grid save becomes one `DBX SALESFORCE DML` pseudo-command
+    // per record (built by dbx-sql) which the driver turns into a REST call:
+    // PATCH /sobjects/{object}/{id}, POST /sobjects/{object}, DELETE /sobjects/{object}/{id}.
+    // Row identity is the `Id` column (the driver marks it is_primary_key), so both
+    // update and delete require it. REST has no transactions: records are written
+    // one by one, a failure leaves the earlier records applied, and nothing can be
+    // rolled back — the grid therefore asks for confirmation before saving.
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: true,
+      deleteRequiresPrimaryKey: true,
+      keylessRowPredicate: false,
+      requiresTransactionalTableForExistingRows: false,
+      existingRowsReadonly: false,
+      transaction: false,
+      readonly: false,
     },
   },
 };

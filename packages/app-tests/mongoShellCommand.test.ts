@@ -6,6 +6,7 @@ import {
   evaluateMongoWriteSafety,
   mongoAggregateWriteStage,
   listChainedCalls,
+  MONGO_SHELL_COMMAND_HINT,
   parseMongoFindExplainCommand,
   mongoBulkWriteToQueryResult,
   mongoCollectionStatsToQueryResult,
@@ -32,12 +33,13 @@ import {
   parseMongoGetIndexesCommand,
   parseMongoVersionCommand,
   planMongoFindPagination,
+  mongoFindPageCoversLogicalLimit,
   parseMongoWriteCommand,
   splitMongoCommands,
   splitMongoCommandRanges,
 } from "../../apps/desktop/src/lib/mongo/mongoShellCommand.ts";
 import type { MongoWriteCommand } from "../../apps/desktop/src/lib/mongo/mongoShellCommand.ts";
-import { buildMongoUpdateDocument as buildMongoDocumentUpdate, formatMongoShellLiteral as formatMongoDocumentShellLiteral } from "../../apps/desktop/src/lib/mongo/mongoDocumentValues.ts";
+import { buildMongoUpdateDocument as buildMongoDocumentUpdate, formatMongoShellLiteral as formatMongoDocumentShellLiteral, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridValue } from "../../apps/desktop/src/lib/mongo/mongoDocumentValues.ts";
 import { normalizeJsonArgument } from "../mongo-shell/src/json.ts";
 
 test("parseMongoFindCommand parses db collection find with an empty JSON filter", () => {
@@ -254,6 +256,23 @@ test("planMongoFindPagination preserves explicit skip and limit bounds", () => {
   assert.equal(mongoFindLogicalTotal(824, plan!), 150);
 });
 
+test("mongoFindPageCoversLogicalLimit only skips counting when the first page holds every limited row", () => {
+  const plan = (source: string, pageOffset: number, pageLimit = 100) => {
+    const command = parseMongoFindCommand(source);
+    assert.ok(command);
+    const result = planMongoFindPagination(source, command, pageOffset, pageLimit);
+    assert.ok(result);
+    return result;
+  };
+
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({ type: 0 }).sort({ eventTime: -1 }).limit(50)", 0)), true);
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({}).skip(20).limit(100)", 0)), true);
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({}).limit(150)", 0)), false);
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({}).limit(150)", 100)), false);
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({})", 0)), false);
+  assert.equal(mongoFindPageCoversLogicalLimit(plan("db.events.find({}).limit(0)", 0)), false);
+});
+
 test("parseMongoFindCommand accepts line breaks before find and chained calls", () => {
   const command = parseMongoFindCommand(`db.getCollection("accounting_reconciliations")
 .find({
@@ -358,6 +377,45 @@ test("parseMongoFindCommand does not rewrite constructor text inside strings", (
   const command = parseMongoFindCommand(`db.orders.find({label: "new Date()", note: 'ObjectId()'})`);
   assert.ok(command);
   assert.deepEqual(JSON.parse(command.filter), { label: "new Date()", note: "ObjectId()" });
+});
+
+test("parseMongoCommand wraps db.getSiblingDB() commands with the target database", () => {
+  // The exact command from #3936.
+  const parsed = parseMongoCommand(`db.getSiblingDB("iam_account").getCollection("user")
+    .find({_id: NumberLong('144115205316939462')})
+    .sort({phone: 1})
+    .limit(21);`);
+  assert.ok(parsed && parsed.command.kind === "inDatabase");
+  assert.equal(parsed.command.database, "iam_account");
+  assert.equal(parsed.command.command.kind, "find");
+  assert.equal((parsed.command.command as { limit: number }).limit, 21);
+  assert.equal((parsed.command.command as { collection: string }).collection, "user");
+
+  assert.equal(parseMongoCommand("db.getSiblingDB('other').orders.updateOne({a: 1}, {$set: {b: 2}})")?.command.kind, "inDatabase");
+  assert.equal(parseMongoCommand('db . getSiblingDB( "x" ) . stats()')?.command.kind, "inDatabase");
+  // A sibling command is one statement in a batch, and a plain one after it is unaffected.
+  assert.deepEqual(
+    splitMongoCommandRanges('db.getSiblingDB("a").c.find({});\ndb.d.find({})').map((range) => range.command.kind),
+    ["inDatabase", "find"],
+  );
+  // A command that parses is not a failure, even when asked directly.
+  assert.equal(describeMongoCommandParseFailure('db.getSiblingDB("other").c.find({})'), MONGO_SHELL_COMMAND_HINT);
+});
+
+test("parseMongoCommand rejects malformed db.getSiblingDB() with a specific reason", () => {
+  for (const [source, expected] of [
+    ['db.getSiblingDB("x")', /requires a database name string followed by a command/],
+    ['db.getSiblingDB("").c.find({})', /requires a database name string/],
+    ["db.getSiblingDB(1).c.find({})", /requires a database name string/],
+    ['db.getSiblingDB("x", "y").c.find({})', /requires a database name string/],
+    ['db.getSiblingDB("x").getSiblingDB("y").c.find({})', /cannot be chained/],
+    // Errors inside the wrapped command are reported as they would be without the prefix.
+    ['db.getSiblingDB("x").c.replaceOne({a: 1}, {$set: {b: 2}})', /must not contain update operators such as \$set/],
+    ['db.getSiblingDB("x").c.bogus()', /Collection method bogus\(\) is not supported/],
+  ] as const) {
+    assert.equal(parseMongoCommand(source), null, source);
+    assert.match(describeMongoCommandParseFailure(source), expected, source);
+  }
 });
 
 test('parseMongoCommand accepts db["name"] bracket collection accessors', () => {
@@ -747,6 +805,25 @@ test("parseMongoWriteCommand accepts unquoted insert and update commands", () =>
   });
 });
 
+test("parseMongoWriteCommand reads renameCollection", () => {
+  assert.deepEqual(parseMongoWriteCommand('db.orders.renameCollection("orders_2024");'), { kind: "renameCollection", collection: "orders", newName: "orders_2024" });
+  assert.equal(parseMongoWriteCommand("db[\"a-b\"].renameCollection('c')")?.kind, "renameCollection");
+  assert.equal(parseMongoWriteCommand('db.getCollection("a").renameCollection("b")')?.kind, "renameCollection");
+
+  for (const [source, expected] of [
+    ["db.orders.renameCollection()", /expects the new collection name/],
+    ["db.orders.renameCollection(1)", /expects the new collection name/],
+    ['db.orders.renameCollection("")', /requires a valid collection name/],
+    ['db.orders.renameCollection("a$b")', /requires a valid collection name/],
+    ['db.orders.renameCollection("orders")', /must differ from the current name/],
+    ['db.orders.renameCollection("x", true)', /dropTarget is not supported; drop the target collection first/],
+    ['db.orders.renameCollection("x").y()', /Unexpected text after renameCollection/],
+  ] as const) {
+    assert.equal(parseMongoCommand(source), null, source);
+    assert.match(describeMongoCommandParseFailure(source), expected, source);
+  }
+});
+
 test("parseMongoWriteCommand reads bulkWrite with every operation kind", () => {
   const command = parseMongoWriteCommand(`db.orders.bulkWrite([
     { insertOne: { document: { sku: "A1", stock: 1 } } },
@@ -853,6 +930,31 @@ test("parseMongoWriteCommand unwraps EJSON.deserialize values", () => {
     update: '{"$set": {"price": {"$numberDecimal":"12.34"}, "payload": {"$binary":{"base64":"AQI=","subType":"00"}}}}',
     many: false,
   });
+});
+
+test("parseMongoWriteCommand accepts the copied insert form that wraps BSON values in EJSON.deserialize", () => {
+  // "Copy -> SQL Inserts" formats values extended JSON cannot spell directly
+  // through `EJSON.deserialize({...})`. The statement is re-parsed by the Rust
+  // parser before execution, so both parsers must accept this exact shape
+  // (#11666).
+  assert.deepEqual(
+    parseMongoWriteCommand(`db.getCollection("test").insert({
+  "type": EJSON.deserialize({
+    "$numberInt": "999999"
+  }),
+  "refid": "27507"
+})`),
+    {
+      kind: "insert",
+      collection: "test",
+      docsJson: `{
+  "type": {
+    "$numberInt": "999999"
+  },
+  "refid": "27507"
+}`,
+    },
+  );
 });
 
 test("parseMongoWriteCommand accepts legacy insert commands", () => {
@@ -1348,6 +1450,88 @@ test("parseMongoCountDocumentsCommand reads estimatedDocumentCount as a metadata
   assert.equal(parseMongoCountDocumentsCommand("db.orders.count()")?.mode, "legacy");
 });
 
+test("parseMongoRunCommand reads db.dropDatabase() and db.createCollection() as run commands", () => {
+  assert.deepEqual(parseMongoRunCommand("db . dropDatabase ( ) ;"), { commandJson: '{"dropDatabase":1}' });
+  assert.deepEqual(parseMongoRunCommand('db.createCollection("events")'), { commandJson: '{"create":"events"}' });
+  assert.deepEqual(JSON.parse(parseMongoRunCommand("db.createCollection('logs', {capped: true, size: 1048576, max: 1000})")!.commandJson), {
+    create: "logs",
+    capped: true,
+    size: 1048576,
+    max: 1000,
+  });
+  assert.equal(parseMongoCommand("db.dropDatabase()")?.command.kind, "runCommand");
+
+  for (const [source, expected] of [
+    ["db.dropDatabase(1)", /dropDatabase\(\) expects no arguments/],
+    ["db.createCollection()", /createCollection\(\) expects a collection name and optional options/],
+    ["db.createCollection(1)", /expects a collection name/],
+    ['db.createCollection("a$b")', /expects a collection name/],
+    ['db.createCollection("a", {create: "b"})', /expects a collection name/],
+    ['db.createCollection("a").x()', /Unexpected text after createCollection/],
+  ] as const) {
+    assert.equal(parseMongoCommand(source), null, source);
+    assert.match(describeMongoCommandParseFailure(source), expected, source);
+  }
+});
+
+test("parseMongoRunCommand reads db.createView() as a create command with viewOn and pipeline", () => {
+  assert.deepEqual(JSON.parse(parseMongoRunCommand('db.createView("active_users", "users", [{ $match: { active: true } }])')!.commandJson), {
+    create: "active_users",
+    viewOn: "users",
+    pipeline: [{ $match: { active: true } }],
+  });
+  assert.deepEqual(JSON.parse(parseMongoRunCommand("db.createView('v', 'users', [], { collation: { locale: 'fr' } });")!.commandJson), {
+    create: "v",
+    viewOn: "users",
+    pipeline: [],
+    collation: { locale: "fr" },
+  });
+  assert.equal(parseMongoCommand('db.createView("v", "users", [])')?.command.kind, "runCommand");
+
+  for (const [source, expected] of [
+    ['db.createView("v", "users")', /createView\(\) expects a view name, a source collection name, a pipeline/],
+    ['db.createView("v", "users", {})', /createView\(\) expects/],
+    ['db.createView("v", 1, [])', /createView\(\) expects/],
+    ['db.createView("v", "users", [], { viewOn: "other" })', /createView\(\) expects/],
+    ['db.createView("v", "users", [{ $match: { a: Foo() } }])', /Unsupported value Foo\(\.\.\.\) in the pipeline argument of createView\(\)/],
+  ] as const) {
+    assert.equal(parseMongoCommand(source), null, source);
+    assert.match(describeMongoCommandParseFailure(source), expected, source);
+  }
+});
+
+test("parseMongoRunCommand reads user and role helpers as usersInfo and rolesInfo", () => {
+  for (const [source, expected] of [
+    ["show users", { usersInfo: 1 }],
+    ["SHOW ROLES;", { rolesInfo: 1 }],
+    ["db.getUsers()", { usersInfo: 1 }],
+    ["db.getUsers({ showCredentials: false, filter: { roles: { $size: 0 } } })", { usersInfo: 1, showCredentials: false, filter: { roles: { $size: 0 } } }],
+    ['db.getUser("app")', { usersInfo: "app" }],
+    ["db.getUser('app', { showPrivileges: true })", { usersInfo: "app", showPrivileges: true }],
+    ["db.getRoles({ showBuiltinRoles: true })", { rolesInfo: 1, showBuiltinRoles: true }],
+    ['db.getRole("reader")', { rolesInfo: "reader" }],
+  ] as const) {
+    assert.deepEqual(JSON.parse(parseMongoRunCommand(source)?.commandJson ?? "null"), expected, source);
+    assert.equal(parseMongoCommand(source)?.command.kind, "runCommand", source);
+  }
+
+  for (const [source, expected] of [
+    ["db.getUser()", /getUser\(\) expects a user name/],
+    ["db.getUser(1)", /getUser\(\) expects a user name/],
+    ["db.getUsers({ usersInfo: 2 })", /getUsers\(\) expects optional options/],
+    ["db.getRoles({}, {})", /getRoles\(\) expects optional options/],
+    ['db.getRole("a").x()', /Unexpected text after getRole/],
+  ] as const) {
+    assert.equal(parseMongoCommand(source), null, source);
+    assert.match(describeMongoCommandParseFailure(source), expected, source);
+  }
+  assert.equal(parseMongoCommand("show users extra"), null);
+  assert.deepEqual(
+    splitMongoCommands("use admin\nshow users\nshow roles").map(({ command }) => command.kind),
+    ["use", "runCommand", "runCommand"],
+  );
+});
+
 test("parseMongoRunCommand reads db.stats() and db.serverStatus() as run commands", () => {
   assert.deepEqual(parseMongoRunCommand("db.stats()"), { commandJson: '{"dbStats":1}' });
   assert.deepEqual(parseMongoRunCommand("db . serverStatus ( ) ;"), { commandJson: '{"serverStatus":1}' });
@@ -1383,14 +1567,14 @@ test("describeMongoCommandParseFailure explains the argument shape a known metho
 });
 
 test("describeMongoCommandParseFailure names unsupported methods and points at alternatives", () => {
-  const rename = describeMongoCommandParseFailure('db.c.renameCollection("d")');
-  assert.match(rename, /^Collection method renameCollection\(\) is not supported\. Supported collection methods: find, findOne/);
+  const mapReduce = describeMongoCommandParseFailure("db.c.mapReduce()");
+  assert.match(mapReduce, /^Collection method mapReduce\(\) is not supported\. Supported collection methods: find, findOne/);
   // Bracket and getCollection targets are recognised too.
-  assert.match(describeMongoCommandParseFailure('db["my-coll"].renameCollection("x")'), /renameCollection\(\) is not supported/);
+  assert.match(describeMongoCommandParseFailure('db["my-coll"].validate()'), /validate\(\) is not supported/);
   assert.match(describeMongoCommandParseFailure('db.getCollection("my-coll").watch()'), /watch\(\) is not supported/);
 
-  assert.match(describeMongoCommandParseFailure('db.createCollection("c")'), /db\.createCollection\(\) is not supported; collections are created on first insert/);
-  assert.match(describeMongoCommandParseFailure('db.getSiblingDB("other").c.find({})'), /use <database>/);
+  assert.match(describeMongoCommandParseFailure("db.getCollectionNames()"), /db\.getCollectionNames\(\) is not supported; collections are listed in the sidebar/);
+  assert.match(describeMongoCommandParseFailure("db.currentOp()"), /db\.currentOp\(\) is not supported/);
   assert.match(describeMongoCommandParseFailure("db.adminCommand({ping: 1})"), /use db\.runCommand/);
   assert.match(describeMongoCommandParseFailure("show collections"), /listed in the sidebar/);
 
@@ -1668,7 +1852,7 @@ test("mongoDocumentsToQueryResult turns mongo documents into grid rows", () => {
 
   assert.deepEqual(result.columns, ["_id", "name", "profile", "active"]);
   assert.deepEqual(result.rows, [
-    ["1", "Ada", '{"role":"admin"}', null],
+    ["1", "Ada", mongoDocumentGridValue({ role: "admin" }), null],
     ["2", "Lin", null, true],
   ]);
   assert.deepEqual(result.mongo_documents, [
@@ -1678,6 +1862,19 @@ test("mongoDocumentsToQueryResult turns mongo documents into grid rows", () => {
   assert.equal(result.affected_rows, 12);
   assert.equal(result.execution_time_ms, 5);
   assert.equal(result.truncated, true);
+});
+
+test("mongoDocumentsToQueryResult displays array structures with shell-style BSON literals", () => {
+  const document = {
+    _id: "1",
+    history: [{ at: 'ISODate("2026-06-10T13:59:31.287Z")', by: { $oid: "507f1f77bcf86cd799439011" } }],
+  };
+  const result = mongoDocumentsToQueryResult([document], 5, 1);
+  const historyCell = result.rows[0]?.[1];
+
+  assert.equal(typeof historyCell, "string");
+  assert.equal(mongoDocumentGridDisplayText(historyCell), '[{"at": ISODate("2026-06-10T13:59:31.287Z"), "by": ObjectId("507f1f77bcf86cd799439011")}]');
+  assert.equal(mongoDocumentGridEditorText(historyCell), JSON.stringify(document.history));
 });
 
 test("mongoDocumentsToQueryResult keeps aligned extended documents for copying", () => {

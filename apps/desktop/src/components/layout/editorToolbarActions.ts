@@ -17,10 +17,11 @@ export interface SpecialPageTabsState {
   driverStoreActive: boolean;
   pluginCenterOpen: boolean;
   pluginCenterActive: boolean;
-  driverUpdateCount: number;
 }
 
 export interface EditorToolbarActions {
+  canNewQuery: Ref<boolean>;
+  newQuery(groupId: string): void;
   explainMode: Ref<"explain" | "autotrace">;
   blockDangerousRedisCommands: Ref<boolean>;
   /** Highlights the database selector of the tab that needs a database choice. */
@@ -28,12 +29,15 @@ export interface EditorToolbarActions {
   /** Captures the acting editor's execution snapshot before a toolbar click. */
   captureExecutionSnapshot(tabId: string): void;
   toolbarExecute(source: "pointer" | "keyboard", tabId: string): void;
+  toolbarExecuteInNewResultTab(source: "pointer" | "keyboard", tabId: string): void;
   cancelExecution(tabId: string): void;
   explain(tabId: string): void;
   formatSql(tabId: string): void;
   compressSql(tabId: string): void;
-  toggleSqlKeywordCase(): void;
+  /** Flips the keyword-case preference and re-cases the acting tab's editor to match. */
+  toggleSqlKeywordCase(tabId: string): void;
   saveSql(tabId: string): void;
+  saveAllTabs(tabIds?: string[]): void;
   openSqlFile(): void;
   importResultArchive(): void;
   pasteSqlInCondition(): void;
@@ -67,20 +71,24 @@ export function createNoopEditorToolbarActions(): EditorToolbarActions {
   const mode = { value: "explain" } as Ref<"explain" | "autotrace">;
   const flag = { value: true } as Ref<boolean>;
   const specialPageTabs = {
-    value: { settingsOpen: false, settingsActive: false, driverStoreOpen: false, driverStoreActive: false, pluginCenterOpen: false, pluginCenterActive: false, driverUpdateCount: 0 },
+    value: { settingsOpen: false, settingsActive: false, driverStoreOpen: false, driverStoreActive: false, pluginCenterOpen: false, pluginCenterActive: false },
   } as Ref<SpecialPageTabsState>;
   return {
+    canNewQuery: { value: false } as Ref<boolean>,
+    newQuery: noop,
     explainMode: mode,
     blockDangerousRedisCommands: flag,
     databaseRequiredSignalFor: () => 0,
     captureExecutionSnapshot: noop,
     toolbarExecute: noop,
+    toolbarExecuteInNewResultTab: noop,
     cancelExecution: noop,
     explain: noop,
     formatSql: noop,
     compressSql: noop,
     toggleSqlKeywordCase: noop,
     saveSql: noop,
+    saveAllTabs: noop,
     openSqlFile: noop,
     importResultArchive: noop,
     pasteSqlInCondition: noop,

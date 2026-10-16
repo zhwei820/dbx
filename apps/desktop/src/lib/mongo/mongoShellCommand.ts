@@ -1,5 +1,5 @@
 import type { QueryResult } from "@/types/database";
-import { mongoDocumentIdForGrid } from "@/lib/mongo/mongoDocumentValues";
+import { isMongoExtendedJsonId, mongoDocumentGridValue, mongoDocumentIdForGrid } from "@/lib/mongo/mongoDocumentValues";
 import {
   chainedMethodCallPattern,
   describeMongoCommandParseFailure as describeMongoCommandParseFailureBasic,
@@ -50,6 +50,7 @@ const COLLECTION_METHOD_SHAPES: Record<string, MongoMethodShape> = {
   updateMany: { expects: "a filter, an update, and optional options", roles: ["filter", "update", "options"] },
   replaceOne: { expects: "a filter, a replacement document, and optional options", roles: ["filter", "replacement", "options"] },
   bulkWrite: { expects: "an array of operations and optional options", roles: ["operations", "options"] },
+  renameCollection: { expects: "the new collection name", roles: ["newName"] },
   deleteOne: { expects: "a filter", roles: ["filter"] },
   deleteMany: { expects: "a filter", roles: ["filter"] },
   findOneAndUpdate: { expects: "a filter, an update, and optional options", roles: ["filter", "update", "options"] },
@@ -80,6 +81,7 @@ const SUPPORTED_COLLECTION_METHODS = [
   "updateMany",
   "replaceOne",
   "bulkWrite",
+  "renameCollection",
   "deleteOne",
   "deleteMany",
   "findOneAndUpdate",
@@ -95,21 +97,26 @@ const SUPPORTED_COLLECTION_METHODS = [
 
 /** Database-level methods with a supported equivalent worth pointing at. */
 const DATABASE_METHOD_HINTS: Record<string, string> = {
-  getSiblingDB: "switch databases with `use <database>` and then run the command against db.<collection>",
   adminCommand: "use db.runCommand({ ... })",
   getCollectionNames: "collections are listed in the sidebar",
-  createCollection: 'collections are created on first insert, or use db.runCommand({ create: "name" })',
 };
 
 const DATABASE_METHOD_SHAPES: Record<string, MongoMethodShape> = {
   version: { expects: "no arguments", roles: [] },
   stats: { expects: "no arguments", roles: [] },
   serverStatus: { expects: "no arguments", roles: [] },
+  dropDatabase: { expects: "no arguments", roles: [] },
+  createCollection: { expects: "a collection name and optional options", roles: ["name", "options"] },
+  createView: { expects: "a view name, a source collection name, a pipeline, and optional options", roles: ["name", "source", "pipeline", "options"] },
+  getUsers: { expects: "optional options", roles: ["options"] },
+  getUser: { expects: "a user name and optional options", roles: ["name", "options"] },
+  getRoles: { expects: "optional options", roles: ["options"] },
+  getRole: { expects: "a role name and optional options", roles: ["name", "options"] },
   createUser: { expects: "a user document and optional write concern", roles: ["user", "writeConcern"] },
   runCommand: { expects: "one command document", roles: ["command"] },
 };
 
-const SUPPORTED_DATABASE_METHODS = ["version", "stats", "serverStatus", "createUser", "runCommand", "getCollection"];
+const SUPPORTED_DATABASE_METHODS = ["version", "stats", "serverStatus", "createCollection", "createView", "dropDatabase", "createUser", "getUsers", "getUser", "getRoles", "getRole", "runCommand", "getCollection", "getSiblingDB"];
 
 const SUPPORTED_VALUE_CONSTRUCTORS = ["ObjectId", "ISODate", "new Date", "NumberLong", "NumberInt", "NumberDecimal", "UUID", "BinData", "Timestamp", "MinKey", "MaxKey"];
 
@@ -123,8 +130,19 @@ export function describeMongoCommandParseFailure(input: string): string {
 }
 
 function diagnoseMongoCommand(source: string): string | null {
+  if (SIBLING_DB_PREFIX.test(source)) {
+    const sibling = splitSiblingDbPrefix(source);
+    if (!sibling) return 'getSiblingDB() requires a database name string followed by a command, for example db.getSiblingDB("app").orders.find({}).';
+    if (SIBLING_DB_PREFIX.test(`db${sibling.rest}`)) return "getSiblingDB() cannot be chained.";
+    const inner = `db${sibling.rest}`;
+    const parsedInner = parseMongoCommand(inner);
+    if (parsedInner) {
+      return parsedInner.command.kind === "use" || parsedInner.command.kind === "showDatabases" ? "getSiblingDB() must be followed by a collection or database method." : null;
+    }
+    return diagnoseMongoCommand(inner) ?? describeMongoCommandParseFailureBasic(inner);
+  }
   if (/^show\s+(collections|tables)\b/i.test(source)) {
-    return "show collections is not supported here; collections are listed in the sidebar. Only show dbs is supported.";
+    return "show collections is not supported here; collections are listed in the sidebar. Supported: show dbs, show users, show roles.";
   }
 
   const shape = COMMAND_SHAPE.exec(source);
@@ -168,6 +186,12 @@ function diagnoseMongoCommand(source: string): string | null {
     return `${method}() returns a result, not a cursor, so nothing can be chained after it: "${tail.length > 40 ? `${tail.slice(0, 40)}…` : tail}".`;
   }
   if (tail) return `Unexpected text after ${method}(...): "${tail.length > 40 ? `${tail.slice(0, 40)}…` : tail}".`;
+  if (method === "renameCollection") {
+    if (args.length > 1) return "renameCollection() dropTarget is not supported; drop the target collection first.";
+    const newName = args[0] ? /^(["'])([^"']*)\1$/.exec(args[0].trim())?.[2] : undefined;
+    if (newName !== undefined && (!newName.trim() || newName.includes("$"))) return "renameCollection() requires a valid collection name.";
+    if (newName !== undefined && shape.groups?.collection === newName) return "renameCollection() new name must differ from the current name.";
+  }
   if (method === "bulkWrite" && args[0]) {
     const operations = normalizeJsonArgument(args[0]);
     const problem = operations ? validateBulkWriteOperations(operations) : null;
@@ -287,9 +311,10 @@ export interface MongoDistinctCommand {
   filter?: string;
 }
 
-type MongoWriteKind = "runCommand" | "insert" | "update" | "replace" | "bulkWrite" | "delete" | "createIndex" | "createUser" | "dropIndex" | "dropIndexes" | "dropCollection" | "findOneAndUpdate" | "findOneAndReplace" | "findOneAndDelete";
+type MongoWriteKind = "runCommand" | "insert" | "update" | "replace" | "bulkWrite" | "delete" | "createIndex" | "createUser" | "dropIndex" | "dropIndexes" | "dropCollection" | "renameCollection" | "findOneAndUpdate" | "findOneAndReplace" | "findOneAndDelete";
 
 export type MongoCommand =
+  | { kind: "inDatabase"; database: string; command: MongoCommand }
   | ({ kind: "find" } & MongoFindCommand)
   | ({ kind: "findExplain" } & MongoFindExplainCommand)
   | ({ kind: "findOne" } & MongoFindOneCommand)
@@ -312,6 +337,7 @@ export type MongoCommand =
   | { kind: "dropIndex"; collection: string; index: string }
   | { kind: "dropIndexes"; collection: string; indexes?: string }
   | { kind: "dropCollection"; collection: string }
+  | { kind: "renameCollection"; collection: string; newName: string }
   | { kind: "findOneAndUpdate"; collection: string; filter: string; update: string; options?: string }
   | { kind: "findOneAndReplace"; collection: string; filter: string; replacement: string; options?: string }
   | { kind: "findOneAndDelete"; collection: string; filter: string; options?: string };
@@ -436,6 +462,11 @@ export function planMongoFindPagination(input: string, command: MongoFindCommand
     logicalSkip,
     logicalLimit,
   };
+}
+
+/** True when the first page already requests every row an explicit `.limit()` allows. */
+export function mongoFindPageCoversLogicalLimit(plan: Pick<MongoFindPaginationPlan, "pageOffset" | "requestLimit" | "logicalLimit">): boolean {
+  return plan.pageOffset === 0 && plan.logicalLimit !== undefined && plan.requestLimit >= plan.logicalLimit;
 }
 
 export function mongoFindLogicalTotal(total: number, plan: Pick<MongoFindPaginationPlan, "logicalSkip" | "logicalLimit">): number {
@@ -761,8 +792,105 @@ export function parseMongoCreateUserCommand(input: string): MongoCreateUserComma
 /** The shell's shorthand for the matching runCommand, so they share its execution path. */
 const DATABASE_STATUS_COMMANDS: Record<string, string> = { stats: "dbStats", serverStatus: "serverStatus" };
 
+/** `db.createCollection(name[, options])` is the create command; options pass through for the server to validate. */
+function parseMongoCreateCollectionCommand(source: string): MongoRunCommand | null {
+  const match = /^db\s*\.\s*createCollection\s*\(/i.exec(source);
+  if (!match) return null;
+  const openIndex = source.indexOf("(", match.index);
+  const closeIndex = findMatchingParen(source, openIndex);
+  if (closeIndex < 0 || source.slice(closeIndex + 1).trim()) return null;
+  const args = splitTopLevel(source.slice(openIndex + 1, closeIndex));
+  if (args.length < 1 || args.length > 2) return null;
+  const name = /^(["'])([^"'$]+)\1$/.exec(args[0]!.trim())?.[2]?.trim();
+  if (!name) return null;
+  const command: Record<string, unknown> = { create: name };
+  if (args[1]?.trim()) {
+    const optionsJson = parseMongoObjectArgument(args[1]);
+    if (!optionsJson) return null;
+    const options = JSON.parse(optionsJson) as Record<string, unknown>;
+    if ("create" in options) return null;
+    Object.assign(command, options);
+  }
+  return { commandJson: JSON.stringify(command) };
+}
+
+/** `db.createView(name, source, pipeline[, options])` is the create command with viewOn and pipeline. */
+function parseMongoCreateViewCommand(source: string): MongoRunCommand | null {
+  const args = databaseMethodArguments(source, "createView");
+  if (!args || args.length < 3 || args.length > 4) return null;
+  const name = parseMongoNameArgument(args[0]!);
+  const viewOn = parseMongoNameArgument(args[1]!);
+  const pipelineJson = normalizeJsonArgument(args[2]!);
+  if (!name || !viewOn || !pipelineJson) return null;
+  const pipeline = JSON.parse(pipelineJson) as unknown;
+  if (!Array.isArray(pipeline)) return null;
+  const command: Record<string, unknown> = { create: name, viewOn, pipeline };
+  const options = parseMongoOptionsArgument(args[3], ["create", "viewOn", "pipeline"]);
+  if (options === null) return null;
+  return { commandJson: JSON.stringify({ ...command, ...options }) };
+}
+
+/** `db.getUsers()` / `db.getUser(name)` and the role equivalents read usersInfo / rolesInfo, as mongosh does. */
+function parseMongoUserInfoCommand(source: string): MongoRunCommand | null {
+  const show = /^show\s+(users|roles)$/i.exec(source)?.[1]?.toLowerCase();
+  if (show) return { commandJson: JSON.stringify(show === "users" ? { usersInfo: 1 } : { rolesInfo: 1 }) };
+  for (const [method, command] of [
+    ["getUsers", "usersInfo"],
+    ["getRoles", "rolesInfo"],
+  ] as const) {
+    const args = databaseMethodArguments(source, method);
+    if (!args) continue;
+    if (args.length > 1) return null;
+    const options = parseMongoOptionsArgument(args[0], [command]);
+    return options === null ? null : { commandJson: JSON.stringify({ [command]: 1, ...options }) };
+  }
+  for (const [method, command] of [
+    ["getUser", "usersInfo"],
+    ["getRole", "rolesInfo"],
+  ] as const) {
+    const args = databaseMethodArguments(source, method);
+    if (!args) continue;
+    if (args.length < 1 || args.length > 2) return null;
+    const name = parseMongoNameArgument(args[0]!);
+    const options = parseMongoOptionsArgument(args[1], [command]);
+    return name && options !== null ? { commandJson: JSON.stringify({ [command]: name, ...options }) } : null;
+  }
+  return null;
+}
+
+/** Arguments of `db.<method>(...)` when the whole source is that one call, otherwise null. */
+function databaseMethodArguments(source: string, method: string): string[] | null {
+  const match = new RegExp(`^db\\s*\\.\\s*${method}\\s*\\(`, "i").exec(source);
+  if (!match) return null;
+  const openIndex = source.indexOf("(", match.index);
+  const closeIndex = findMatchingParen(source, openIndex);
+  if (closeIndex < 0 || source.slice(closeIndex + 1).trim()) return null;
+  const args = splitTopLevel(source.slice(openIndex + 1, closeIndex));
+  return args.length === 1 && !args[0]?.trim() ? [] : args;
+}
+
+function parseMongoNameArgument(argument: string): string | null {
+  return /^(["'])([^"'$]+)\1$/.exec(argument.trim())?.[2]?.trim() || null;
+}
+
+/** An optional options document, rejected when it would override one of the command's own keys. */
+function parseMongoOptionsArgument(argument: string | undefined, reservedKeys: readonly string[]): Record<string, unknown> | null {
+  if (!argument?.trim()) return {};
+  const optionsJson = parseMongoObjectArgument(argument);
+  if (!optionsJson) return null;
+  const options = JSON.parse(optionsJson) as Record<string, unknown>;
+  return reservedKeys.some((key) => key in options) ? null : options;
+}
+
 export function parseMongoRunCommand(input: string): MongoRunCommand | null {
   const source = input.trim().replace(/;$/, "").trim();
+  if (/^db\s*\.\s*dropDatabase\s*\(\s*\)$/i.test(source)) return { commandJson: JSON.stringify({ dropDatabase: 1 }) };
+  const createCollection = parseMongoCreateCollectionCommand(source);
+  if (createCollection) return createCollection;
+  const createView = parseMongoCreateViewCommand(source);
+  if (createView) return createView;
+  const userInfo = parseMongoUserInfoCommand(source);
+  if (userInfo) return userInfo;
   for (const [method, command] of Object.entries(DATABASE_STATUS_COMMANDS)) {
     if (new RegExp(`^db\\s*\\.\\s*${method}\\s*\\(\\s*\\)$`, "i").test(source)) {
       return { commandJson: JSON.stringify({ [command]: 1 }) };
@@ -889,6 +1017,17 @@ export function parseMongoWriteCommand(input: string): MongoWriteCommand | null 
     return indexes !== null ? { kind: "dropIndexes", collection: dropIndexes.collection, ...(indexes ? { indexes } : {}) } : null;
   }
 
+  const renameCollection = parseCollectionMethodTarget(source, "renameCollection");
+  if (renameCollection) {
+    const args = parseMethodArgs(source, renameCollection.methodCallIndex);
+    // A second argument would be dropTarget, which deletes an existing collection of the
+    // new name; it is rejected (see the diagnostics) rather than silently ignored.
+    if (!args || args.length !== 1) return null;
+    const newName = /^(["'])([^"'$]+)\1$/.exec(args[0]!.trim())?.[2]?.trim();
+    if (!newName || newName === renameCollection.collection) return null;
+    return { kind: "renameCollection", collection: renameCollection.collection, newName };
+  }
+
   const dropCollection = parseCollectionMethodTarget(source, "drop");
   if (dropCollection) {
     const args = parseMethodArgs(source, dropCollection.methodCallIndex);
@@ -975,12 +1114,38 @@ export function parseMongoCommand(input: string): ParsedMongoCommand | null {
     },
   ];
 
+  // `db.getSiblingDB("name").<command>` runs the wrapped command against that
+  // database for this command only, unlike `use`.
+  const sibling = splitSiblingDbPrefix(text);
+  if (sibling) {
+    const inner = parseMongoCommand(`db${sibling.rest}`);
+    if (!inner || inner.command.kind === "use" || inner.command.kind === "showDatabases" || inner.command.kind === "inDatabase") return null;
+    return { text, command: { kind: "inDatabase", database: sibling.database, command: inner.command } };
+  }
+
   for (const parse of parsers) {
     const command = parse(text);
     if (command) return { text, command };
   }
 
   return null;
+}
+
+const SIBLING_DB_PREFIX = /^db\s*\.\s*getSiblingDB\s*\(/;
+
+/** The database named by a leading `db.getSiblingDB("…")`, and the text after the call, which must continue with `.`. */
+export function splitSiblingDbPrefix(source: string): { database: string; rest: string } | null {
+  const match = SIBLING_DB_PREFIX.exec(source);
+  if (!match) return null;
+  const openIndex = match[0].length - 1;
+  const closeIndex = findMatchingParen(source, openIndex);
+  if (closeIndex < 0) return null;
+  const args = splitTopLevel(source.slice(openIndex + 1, closeIndex));
+  const database = args.length === 1 ? /^(["'])([^"']+)\1$/.exec(args[0]!.trim())?.[2] : undefined;
+  if (!database) return null;
+  const rest = source.slice(closeIndex + 1);
+  if (!rest.trimStart().startsWith(".")) return null;
+  return { database, rest: rest.trimStart() };
 }
 
 export function parseMongoShowDatabasesCommand(input: string): MongoShowDatabasesCommand | null {
@@ -1053,7 +1218,17 @@ export function evaluateMongoAggregateSafety(command: MongoAggregateCommand, opt
   return { allowed: true };
 }
 
-export function mongoDocumentsToQueryResult(documents: unknown[], executionTimeMs: number, total: number, copyDocuments?: unknown[], totalIsExact = true): QueryResult {
+export interface MongoDocumentsToQueryResultOptions {
+  /**
+   * Encode arrays/subdocuments with the collection grid's BSON-faithful values so
+   * display, editing and clipboard share one representation. Export paths that
+   * need source text pass `false` and keep plain JSON cells.
+   */
+  documentGridValues?: boolean;
+}
+
+export function mongoDocumentsToQueryResult(documents: unknown[], executionTimeMs: number, total: number, copyDocuments?: unknown[], totalIsExact = true, options: MongoDocumentsToQueryResultOptions = {}): QueryResult {
+  const documentGridValues = options.documentGridValues !== false;
   const columns: string[] = [];
 
   for (const doc of documents) {
@@ -1067,8 +1242,8 @@ export function mongoDocumentsToQueryResult(documents: unknown[], executionTimeM
   }
 
   const rows = documents.map((doc) => {
-    if (isRecord(doc)) return columns.map((column) => toCellValue(doc[column]));
-    return columns.map((column) => (column === "value" ? toCellValue(doc) : null));
+    if (isRecord(doc)) return columns.map((column) => toCellValue(doc[column], documentGridValues));
+    return columns.map((column) => (column === "value" ? toCellValue(doc, documentGridValues) : null));
   });
 
   return {
@@ -1184,6 +1359,15 @@ export function mongoUseToQueryResult(database: string, executionTimeMs: number)
   };
 }
 
+export function mongoScalarToQueryResult(column: string, value: string, executionTimeMs: number): QueryResult {
+  return {
+    columns: [column],
+    rows: [[value]],
+    affected_rows: 1,
+    execution_time_ms: Math.max(0, Math.round(executionTimeMs)),
+  };
+}
+
 export function mongoVersionToQueryResult(version: string, executionTimeMs: number): QueryResult {
   return {
     columns: ["version"],
@@ -1250,13 +1434,13 @@ function parseMethodArgs(source: string, methodCallIndex: number): string[] | nu
   return splitTopLevel(source.slice(openIndex + 1, closeIndex));
 }
 
-interface MongoTextRange {
+export interface MongoTextRange {
   from: number;
   to: number;
   text: string;
 }
 
-function splitMongoCommandTextRanges(input: string): MongoTextRange[] {
+export function splitMongoCommandTextRanges(input: string): MongoTextRange[] {
   const commands: MongoTextRange[] = [];
   for (const segment of splitMongoSemicolonSeparatedSegments(input)) {
     const parsed = parseMongoCommand(segment.text);
@@ -1353,25 +1537,26 @@ function splitMongoSegmentAtSoftStarts(segment: MongoTextRange): MongoTextRange[
   for (let index = 1; index < boundaries.length; index += 1) {
     const boundary = boundaries[index] ?? 0;
     const candidate = trimMongoOuterCommentRange(segment.text, start, boundary);
-    // Only accept newline-based splitting when every slice is a valid command;
-    // otherwise keep the original text intact and let normal parsing reject it.
-    if (!candidate || !parseMongoCommand(candidate.text)) return [segment];
-    segments.push({
-      from: segment.from + candidate.from,
-      to: segment.from + candidate.to,
-      text: candidate.text,
-    });
+    if (candidate) pushMongoSlice(segments, segment, candidate);
     start = boundary;
   }
 
   const last = trimMongoOuterCommentRange(segment.text, start, segment.text.length);
-  if (!last || !parseMongoCommand(last.text)) return [segment];
-  segments.push({
-    from: segment.from + last.from,
-    to: segment.from + last.to,
-    text: last.text,
-  });
-  return segments;
+  if (last) pushMongoSlice(segments, segment, last);
+  // Splitting is an improvement only when at least one slice really is a command;
+  // otherwise keep the text intact so the normal parser reports the failure once
+  // instead of once per line.
+  return segments.some((slice) => isMongoCommandText(slice.text)) && segments.length > 1 ? segments : [segment];
+}
+
+function pushMongoSlice(segments: MongoTextRange[], parent: MongoTextRange, slice: MongoTextRange): void {
+  segments.push({ from: parent.from + slice.from, to: parent.from + slice.to, text: slice.text });
+}
+
+/** Does this text start like a shell command (`db…`, `use …`, `show dbs`)? */
+export function isMongoCommandText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return isMongoCommandLineStart(trimmed, 0) || /^rs[.\[]|^sh[.\[]/i.test(trimmed);
 }
 
 function mongoTopLevelCommandLineStarts(segment: string): number[] {
@@ -1383,15 +1568,26 @@ function mongoTopLevelCommandLineStarts(segment: string): number[] {
   let blockComment = false;
   let lineStart = 0;
   let firstNonWhitespaceOnLine = -1;
+  // Does the line we just finished close a statement? Used so a JS helper line
+  // between two commands (`var ids = [...]`) still starts its own statement instead
+  // of being glued onto the command above it.
+  let lineHadCode = false;
+  let closesStatement = false;
+  let afterClosedStatement = false;
 
   for (let i = 0; i < segment.length; i += 1) {
     const char = segment[i] ?? "";
     const next = segment[i + 1] ?? "";
 
-    if (char === "\n") {
+    // A lone CR is a line break too (pasted shell history, old Mac files); CRLF is
+    // handled by the LF branch once the CR falls inside the same line.
+    if (char === "\n" || (char === "\r" && next !== "\n")) {
       if (lineComment) lineComment = false;
+      afterClosedStatement = depth === 0 && lineHadCode && closesStatement;
       lineStart = i + 1;
       firstNonWhitespaceOnLine = -1;
+      lineHadCode = false;
+      closesStatement = false;
       continue;
     }
 
@@ -1428,16 +1624,31 @@ function mongoTopLevelCommandLineStarts(segment: string): number[] {
 
     if (char === '"' || char === "'" || char === "`") {
       if (firstNonWhitespaceOnLine === -1 && !/\s/.test(char)) firstNonWhitespaceOnLine = i;
+      lineHadCode = true;
+      closesStatement = false;
       quote = char;
       continue;
     }
 
+    if (/\s/.test(char)) continue;
+
     if (char === "{" || char === "[" || char === "(") depth += 1;
-    else if ((char === "}" || char === "]" || char === ")") && depth > 0) depth -= 1;
+    else if (char === "}" || char === "]" || char === ")") {
+      if (depth > 0) depth -= 1;
+      closesStatement = depth === 0;
+    } else if (char === ";" && depth === 0) {
+      closesStatement = true;
+    } else {
+      closesStatement = false;
+    }
+    lineHadCode = true;
 
     if (firstNonWhitespaceOnLine === -1 && !/\s/.test(char)) {
       firstNonWhitespaceOnLine = i;
-      if (depth === 0 && char !== "." && isMongoCommandLineStart(segment, i)) starts.push(i);
+      if (depth === 0 && char !== "." && (isMongoCommandLineStart(segment, i) || afterClosedStatement)) {
+        starts.push(i);
+        afterClosedStatement = false;
+      }
     }
   }
 
@@ -1446,7 +1657,7 @@ function mongoTopLevelCommandLineStarts(segment: string): number[] {
 
 function isMongoCommandLineStart(segment: string, index: number): boolean {
   const rest = segment.slice(index);
-  return /^use\b/i.test(rest) || /^show\s+(?:dbs|databases)\b/i.test(rest) || /^db(?:\s*\.|\b)/i.test(rest);
+  return /^use\b/i.test(rest) || /^show\s+(?:dbs|databases|users|roles)\b/i.test(rest) || /^db(?:\s*\.|\b)/i.test(rest);
 }
 
 function pushMongoSegment(segments: MongoTextRange[], source: string, from: number, to: number) {
@@ -1764,7 +1975,7 @@ export function validateBulkWriteOptions(optionsJson: string): string | null {
 }
 
 /** Filters of every non-insert operation, for the safety checks. */
-function bulkWriteFilters(operationsJson: string): string[] {
+export function bulkWriteFilters(operationsJson: string): string[] {
   try {
     const entries = JSON.parse(operationsJson) as Array<Record<string, { filter?: unknown }>>;
     return entries.flatMap((entry) => Object.values(entry)).flatMap((spec) => (isDocument(spec?.filter) ? [JSON.stringify(spec.filter)] : []));
@@ -1787,7 +1998,7 @@ function mongoWriteFilter(command: MongoWriteCommand): string | null {
   }
 }
 
-function mongoFilterIsEffectivelyUnbounded(json: string): boolean {
+export function mongoFilterIsEffectivelyUnbounded(json: string): boolean {
   const parsed = parseNormalizedJson(json);
   return !isRecord(parsed) || mongoFilterContainsOpaqueLogic(parsed) || mongoFilterObjectIsUnbounded(parsed);
 }
@@ -1938,8 +2149,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function toCellValue(value: unknown): string | number | boolean | null {
+function toCellValue(value: unknown, documentGridValues = false): string | number | boolean | null {
   if (value === undefined || value === null) return null;
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  return mongoDocumentIdForGrid(value);
+  // Typed scalar ids keep their compact grid display; arrays and subdocuments take the
+  // document-grid encoding so display, editing and clipboard share the collection grid's
+  // representation instead of dumping the internal JSON encoding into the cell.
+  if (isMongoExtendedJsonId(value)) return mongoDocumentIdForGrid(value);
+  return documentGridValues ? (mongoDocumentGridValue(value) as string) : mongoDocumentIdForGrid(value);
 }

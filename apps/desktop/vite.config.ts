@@ -9,7 +9,7 @@ const host = process.env.TAURI_DEV_HOST;
 const isTauri = !!host || !!process.env.TAURI_ENV_ARCH;
 const configuredBasePath = process.env.VITE_DBX_BASE_PATH || process.env.DBX_PUBLIC_BASE_PATH;
 const manualChunks: Record<string, string[]> = {
-  codemirror: ["codemirror", "@codemirror/lang-sql", "@codemirror/view", "@codemirror/state", "@codemirror/autocomplete", "@codemirror/commands", "@codemirror/theme-one-dark"],
+  codemirror: ["codemirror", "@codemirror/lang-sql", "@codemirror/view", "@codemirror/state", "@codemirror/autocomplete", "@codemirror/commands", "@codemirror/lint", "@codemirror/theme-one-dark"],
   "vue-echarts": ["vue-echarts"],
   ui: ["reka-ui"],
   marked: ["marked"],
@@ -64,6 +64,7 @@ const backendUrl = process.env.DBX_BACKEND_URL || "http://localhost:4224";
 
 export default defineConfig(async () => ({
   root: import.meta.dirname,
+  cacheDir: process.env.DBX_DEV_CACHE_DIR,
   base: viteBase,
   plugins: [connectionTypesPlugin(), publicBasePathRedirectPlugin(publicBasePath), vue(), tailwindcss()],
   resolve: {
