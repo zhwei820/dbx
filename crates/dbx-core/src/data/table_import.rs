@@ -3128,7 +3128,6 @@ impl XlsxPreviewRawCell {
     fn has_content(&self) -> bool {
         self.has_inline_value || self.has_value
     }
-    }
 }
 
 fn xlsx_dimension_bounds(reference: &str) -> Option<((usize, usize), (usize, usize))> {
@@ -4328,8 +4327,7 @@ fn stream_xlsx_rows_to_channel_with_control(
                         rows.push_cell(row, column, value, current_cell.has_content(), progress)?;
                     }
                 }
-                    current_cell = XlsxPreviewRawCell::default();
-                }
+                current_cell = XlsxPreviewRawCell::default();
                 inline_phonetic_depth = 0;
                 in_inline_text = false;
             }
