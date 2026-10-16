@@ -48,6 +48,7 @@ import {
   spreadsheetSourceToRows,
 } from "@/lib/spreadsheet/spreadsheetGrid";
 import { applySpreadsheetCellChanges, applySpreadsheetRowPatch, diffSpreadsheetRows, invertColumnSplice, type SpreadsheetCellChange, type SpreadsheetChange, SpreadsheetHistory, type SpreadsheetHistoryDirection } from "@/lib/spreadsheet/spreadsheetHistory";
+import { TABLE_IMPORT_ENCODING_OPTIONS } from "@/lib/table/tableImport";
 import SpreadsheetInsertDialog, { type SpreadsheetInsertPosition } from "@/components/spreadsheet/SpreadsheetInsertDialog.vue";
 import SpreadsheetRenameColumnDialog from "@/components/spreadsheet/SpreadsheetRenameColumnDialog.vue";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -72,6 +73,8 @@ const historyState = ref({ canUndo: false, canRedo: false, dirty: false });
 const dirty = computed(() => historyState.value.dirty);
 const saving = ref(false);
 const fileType = ref("");
+// The CSV writer always emits UTF-8 + BOM, so writing back in place needs the encoding the file was read as.
+let sourceEncoding = "";
 let loadGeneration = 0;
 
 const theme = computed(() => (isDark.value ? "darkCompact" : "compact"));
@@ -89,6 +92,7 @@ async function load(sheetName?: string) {
     sheets.value = preview.sheets ?? [];
     activeSheet.value = sheetName ?? sheets.value[0];
     fileType.value = preview.fileType;
+    sourceEncoding = preview.effectiveEncoding ?? "";
     headers.value = preview.columns;
     headerSelection = undefined;
     activeSort.value = undefined;
@@ -124,32 +128,71 @@ async function switchSheet(sheet: string) {
   if (sheet !== activeSheet.value && (await confirmDiscardEdits())) void load(sheet);
 }
 
-async function saveAsCsv() {
-  // A truncated preview would silently drop every row past the limit.
-  if (saving.value || loading.value || truncated.value) return;
+// Only a file opened as CSV can be written back to its own path; the writer emits CSV and nothing else.
+const savesInPlace = computed(() => fileType.value === "csv");
+const canSave = computed(() => !loading.value && !saving.value && !truncated.value && !error.value);
+
+const saveButtonLabel = computed(() => t(savesInPlace.value ? "spreadsheet.save" : "spreadsheet.saveAsCsv"));
+
+const saveButtonTitle = computed(() => {
+  if (truncated.value) return t("spreadsheet.saveDisabledTruncated");
+  const save = formatShortcutDisplay("Mod+S");
+  if (!savesInPlace.value) return `${t("spreadsheet.saveAsCsv")} (${save})`;
+  return `${t("spreadsheet.save")} (${save}) · ${t("spreadsheet.saveAs")} (${formatShortcutDisplay("Mod+Shift+S")})`;
+});
+
+async function pickCsvSavePath(): Promise<string | null> {
+  const defaultPath = defaultCsvSavePath(props.filePath);
+  if (!isTauriRuntime()) return defaultPath;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath, filters: [{ name: "CSV", extensions: ["csv"] }] });
+}
+
+// The writer always emits UTF-8 + BOM, so overwriting a file stored in another encoding changes the file.
+async function confirmEncodingRewrite(): Promise<boolean> {
+  // An empty encoding means the file was not read as delimited text, so there is nothing to compare against.
+  if (!sourceEncoding || sourceEncoding === "utf8") return true;
+  const labelKey = TABLE_IMPORT_ENCODING_OPTIONS.find((option) => option.value === sourceEncoding)?.labelKey;
+  const message = t("spreadsheet.saveEncodingWarning", { encoding: labelKey ? t(labelKey) : sourceEncoding });
+  if (!isTauriRuntime()) return window.confirm(message);
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(message, { kind: "warning" });
+}
+
+async function writeCsvTo(outputPath: string) {
+  // Edits made while the file is being written are not part of it.
+  const savedState = history.stateId;
+  // getSource is the unsorted, unfiltered backing data, including in-grid edits.
+  const source = ((await gridRef.value?.$el.getSource()) ?? grid.value.source) as Record<string, unknown>[];
+  const width = grid.value.columns.length;
+  await api.exportQueryResultCsv(
+    outputPath,
+    Array.from({ length: width }, (_, index) => headers.value[index] ?? ""),
+    spreadsheetSourceToRows(source, width),
+    useSettingsStore().editorSettings.csvQuoteMode,
+  );
+  history.markSaved(savedState);
+  syncHistory();
+  toast(t("spreadsheet.saved", { path: outputPath }), 3000);
+}
+
+// The toolbar button and both shortcuts share this one flow, and saving stays set while a path is being picked
+// or confirmed so a second Mod+S cannot start a second save on top of the first.
+async function saveFile(saveAs: boolean) {
+  // A truncated preview would silently drop every row past the limit. The button is disabled for it; a shortcut
+  // that did nothing at all would look broken.
+  if (truncated.value && !loading.value && !saving.value && !error.value) {
+    toast(t("spreadsheet.saveDisabledTruncated"), 5000);
+    return;
+  }
+  if (!canSave.value) return;
   saving.value = true;
   try {
-    let outputPath = defaultCsvSavePath(props.filePath);
-    if (isTauriRuntime()) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: outputPath, filters: [{ name: "CSV", extensions: ["csv"] }] });
-      if (!path) return;
-      outputPath = path;
-    }
-    // Edits made while the file is being written are not part of it.
-    const savedState = history.stateId;
-    // getSource is the unsorted, unfiltered backing data, including in-grid edits.
-    const source = ((await gridRef.value?.$el.getSource()) ?? grid.value.source) as Record<string, unknown>[];
-    const width = grid.value.columns.length;
-    await api.exportQueryResultCsv(
-      outputPath,
-      Array.from({ length: width }, (_, index) => headers.value[index] ?? ""),
-      spreadsheetSourceToRows(source, width),
-      useSettingsStore().editorSettings.csvQuoteMode,
-    );
-    history.markSaved(savedState);
-    syncHistory();
-    toast(t("spreadsheet.saved", { path: outputPath }), 3000);
+    const writeInPlace = !saveAs && savesInPlace.value;
+    const outputPath = writeInPlace ? props.filePath : await pickCsvSavePath();
+    if (!outputPath) return;
+    if (writeInPlace && !(await confirmEncodingRewrite())) return;
+    await writeCsvTo(outputPath);
   } catch (e: any) {
     toast(t("spreadsheet.saveFailed", { message: e?.message || String(e) }), 5000);
   } finally {
@@ -598,16 +641,24 @@ const viewerRef = ref<HTMLElement>();
 
 // RevoGrid copies and pastes through the native clipboard events, which WebKit (the macOS and Linux webviews) only
 // fires for a text selection or an editable field, so Mod+C and Mod+V on selected cells did nothing there. Both are
-// handled here instead; Mod+Shift+C adds the column names. Listening on the document also covers focus left on the
-// body or the find field.
+// handled here instead; Mod+Shift+C adds the column names. Mod+S writes an opened CSV back to its own path and
+// Mod+Shift+S always saves as. Listening on the document also covers focus left on the body or the find field.
 function onDocumentKeydown(event: KeyboardEvent) {
   if (!(event.metaKey || event.ctrlKey) || event.altKey || event.defaultPrevented) return;
   const isCopy = event.code === "KeyC";
   const isPaste = event.code === "KeyV" && !event.shiftKey;
-  if (!isCopy && !isPaste) return;
+  const isSave = event.code === "KeyS";
+  if (!isCopy && !isPaste && !isSave) return;
   const target = event.target instanceof Element ? event.target : null;
   const onPage = !target || target === document.body || target === document.documentElement;
   if (!onPage && !viewerRef.value?.contains(target)) return;
+  if (isSave) {
+    // The webview would otherwise save the page, and saving has no text meaning to keep inside a cell editor.
+    event.preventDefault();
+    event.stopPropagation();
+    void saveFile(event.shiftKey);
+    return;
+  }
   // An open cell editor keeps the native clipboard, as does pasting into the find field or copying selected text.
   if (target?.closest("input, textarea, [contenteditable='true']") && (isPaste || gridElement()?.contains(target))) return;
   if (isCopy && hasTextSelection(target)) return;
@@ -961,10 +1012,10 @@ defineExpose({ refresh, focusSearch });
       <Button variant="ghost" size="icon" class="h-7 w-7" :title="`${t('spreadsheet.redo')} (${formatShortcutDisplay('Mod+Shift+Z')})`" :aria-label="t('spreadsheet.redo')" :disabled="loading || !historyState.canRedo" @click="stepHistory('redo')">
         <Redo2 class="h-3.5 w-3.5" />
       </Button>
-      <Button variant="ghost" size="sm" class="h-7 gap-1 px-2 text-xs" :title="truncated ? t('spreadsheet.saveDisabledTruncated') : t('spreadsheet.saveAsCsv')" :disabled="loading || saving || truncated || !!error" @click="saveAsCsv">
+      <Button variant="ghost" size="sm" class="h-7 gap-1 px-2 text-xs" :title="saveButtonTitle" :disabled="!canSave" @click="saveFile(false)">
         <Loader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
         <Save v-else class="h-3.5 w-3.5" />
-        {{ t("spreadsheet.saveAsCsv") }}
+        {{ saveButtonLabel }}
       </Button>
       <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('spreadsheet.reload')" :disabled="loading" @click="refresh">
         <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
