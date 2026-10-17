@@ -10,6 +10,7 @@ import {
   duplicateColumnsSplice,
   duplicateSpreadsheetRows,
   findSpreadsheetMatches,
+  fitSpreadsheetColumnSizes,
   insertColumnsSplice,
   insertSpreadsheetRows,
   parseSpreadsheetClipboard,
@@ -22,6 +23,8 @@ import {
   spreadsheetMatchFrom,
   spreadsheetPasteCells,
   spreadsheetSourceToRows,
+  SPREADSHEET_MAX_COLUMN_SIZE,
+  SPREADSHEET_MIN_COLUMN_SIZE,
 } from "../spreadsheetGrid";
 
 describe("buildSpreadsheetGrid", () => {
@@ -44,6 +47,31 @@ describe("buildSpreadsheetGrid", () => {
       { c0: "", c1: "" },
       { c0: "x", c1: "y" },
     ]);
+  });
+});
+
+describe("fitSpreadsheetColumnSizes", () => {
+  it("fits each column to its widest header or value within the size bounds", () => {
+    const [narrow, wide, long] = fitSpreadsheetColumnSizes(["a", "a much longer header", "c"], [[1, "x", "y".repeat(500)]], 3);
+
+    expect(narrow).toBeGreaterThanOrEqual(SPREADSHEET_MIN_COLUMN_SIZE);
+    expect(wide).toBeGreaterThan(narrow);
+    expect(wide).toBeLessThan(SPREADSHEET_MAX_COLUMN_SIZE);
+    expect(long).toBe(SPREADSHEET_MAX_COLUMN_SIZE);
+  });
+
+  it("counts wide glyphs double and sizes columns past the header row", () => {
+    const [latin, cjk, extra] = fitSpreadsheetColumnSizes(["", ""], [["abcdefghijkl", "一二三四五六七八九十十一"]], 3);
+
+    expect(cjk).toBeGreaterThan(latin);
+    expect(extra).toBeGreaterThanOrEqual(SPREADSHEET_MIN_COLUMN_SIZE);
+    expect(extra).toBeLessThan(latin);
+  });
+
+  it("is applied when the grid is built", () => {
+    const { columns } = buildSpreadsheetGrid(["id"], [["z".repeat(500)]]);
+
+    expect(columns[0].size).toBe(SPREADSHEET_MAX_COLUMN_SIZE);
   });
 });
 

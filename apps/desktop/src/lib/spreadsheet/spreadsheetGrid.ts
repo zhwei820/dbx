@@ -4,6 +4,15 @@ export const SPREADSHEET_VIEWER_MAX_ROWS = 200_000;
 export const SPREADSHEET_MAX_INSERT_ROWS = 10_000;
 export const SPREADSHEET_MAX_INSERT_COLUMNS = 1_000;
 const DEFAULT_COLUMN_SIZE = 140;
+export const SPREADSHEET_MIN_COLUMN_SIZE = 60;
+export const SPREADSHEET_MAX_COLUMN_SIZE = 300;
+// Fitting estimates text by character count at the compact theme's 12px font; wide (CJK) glyphs count double.
+const FIT_CHAR_WIDTH = 7;
+// Cell padding on both sides, plus the filter button that shares the header with the column name.
+const FIT_CELL_PADDING = 30;
+const FIT_HEADER_CONTROL_WIDTH = 24;
+// Fitting reads only the first rows, so a 200k-row file does not stall on open.
+const FIT_SAMPLE_ROWS = 500;
 
 export type SpreadsheetRecord = Record<string, unknown>;
 
@@ -20,7 +29,7 @@ export function spreadsheetColumns(headers: readonly string[], width: number, si
 export function buildSpreadsheetGrid(headers: string[], rows: unknown[][]) {
   let width = headers.length;
   for (const row of rows) if (row.length > width) width = row.length;
-  const columns = spreadsheetColumns(headers, width);
+  const columns = spreadsheetColumns(headers, width, fitSpreadsheetColumnSizes(headers, rows, width));
   const source = rows.map((row) => {
     const record: Record<string, unknown> = {};
     for (let index = 0; index < width; index++) {
@@ -30,6 +39,31 @@ export function buildSpreadsheetGrid(headers: string[], rows: unknown[][]) {
     return record;
   });
   return { columns, source };
+}
+
+// Each column is sized to its widest header or sampled value, like a spreadsheet's auto-fit, within the size bounds.
+export function fitSpreadsheetColumnSizes(headers: readonly string[], rows: readonly unknown[][], width: number): number[] {
+  const sample = rows.length > FIT_SAMPLE_ROWS ? rows.slice(0, FIT_SAMPLE_ROWS) : rows;
+  return Array.from({ length: width }, (_, index) => {
+    let size = estimateTextWidth(spreadsheetColumnName(headers, index)) + FIT_CELL_PADDING + FIT_HEADER_CONTROL_WIDTH;
+    for (const row of sample) {
+      if (size >= SPREADSHEET_MAX_COLUMN_SIZE) break;
+      const value = row[index];
+      if (value === null || value === undefined || value === "") continue;
+      const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+      size = Math.max(size, estimateTextWidth(text) + FIT_CELL_PADDING);
+    }
+    return Math.min(SPREADSHEET_MAX_COLUMN_SIZE, Math.max(SPREADSHEET_MIN_COLUMN_SIZE, Math.ceil(size)));
+  });
+}
+
+function estimateTextWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    width += ch.codePointAt(0)! > 0x7e ? FIT_CHAR_WIDTH * 2 : FIT_CHAR_WIDTH;
+    if (width >= SPREADSHEET_MAX_COLUMN_SIZE) break;
+  }
+  return width;
 }
 
 // A blank header shows the column letter, but stays blank in the headers that get saved.
