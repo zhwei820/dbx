@@ -68,6 +68,14 @@ describe("fitSpreadsheetColumnSizes", () => {
     expect(extra).toBeLessThan(latin);
   });
 
+  it("sizes with the given text measure, headers in the header font", () => {
+    const measure = (text: string, header: boolean) => text.length * (header ? 10 : 9);
+    const [id, name] = fitSpreadsheetColumnSizes(["id", "name"], [["7446832310051151872", "x"]], 2, measure);
+
+    expect(id).toBe(19 * 9 + 30);
+    expect(name).toBe(4 * 10 + 30 + 24);
+  });
+
   it("is applied when the grid is built", () => {
     const { columns } = buildSpreadsheetGrid(["id"], [["z".repeat(500)]]);
 

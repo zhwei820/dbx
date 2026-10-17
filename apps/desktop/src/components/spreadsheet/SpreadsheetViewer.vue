@@ -28,6 +28,7 @@ import {
   duplicateSpreadsheetRows,
   findSpreadsheetMatches,
   type GridRange,
+  gridTextMeasure,
   insertColumnsSplice,
   insertSpreadsheetRows,
   parseSpreadsheetClipboard,
@@ -98,7 +99,8 @@ async function load(sheetName?: string) {
     activeSort.value = undefined;
     headerSelectionAnchor = -1;
     rowSelectionAnchor = -1;
-    const next = buildSpreadsheetGrid(preview.columns, preview.rows);
+    const gridElement = gridRef.value?.$el;
+    const next = buildSpreadsheetGrid(preview.columns, preview.rows, gridElement && gridTextMeasure(gridElement));
     grid.value = { columns: decorateColumns(next.columns), source: next.source };
     pendingCells = [];
     history.reset();

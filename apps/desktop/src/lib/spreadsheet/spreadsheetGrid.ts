@@ -6,13 +6,19 @@ export const SPREADSHEET_MAX_INSERT_COLUMNS = 1_000;
 const DEFAULT_COLUMN_SIZE = 140;
 export const SPREADSHEET_MIN_COLUMN_SIZE = 60;
 export const SPREADSHEET_MAX_COLUMN_SIZE = 300;
-// Fitting estimates text by character count at the compact theme's 12px font; wide (CJK) glyphs count double.
-const FIT_CHAR_WIDTH = 7;
+// Without a rendered grid to measure against, text is estimated by character count at the grid's 14px font;
+// wide (CJK) glyphs count double.
+const FIT_CHAR_WIDTH = 8;
 // Cell padding on both sides, plus the filter button that shares the header with the column name.
 const FIT_CELL_PADDING = 30;
 const FIT_HEADER_CONTROL_WIDTH = 24;
 // Fitting reads only the first rows, so a 200k-row file does not stall on open.
 const FIT_SAMPLE_ROWS = 500;
+// Longer text is past the size cap however narrow its glyphs, so only its start is measured.
+const FIT_MAX_TEXT_LENGTH = 200;
+
+// Rendered width of `text` in px; headers use the header font.
+export type SpreadsheetTextMeasure = (text: string, header: boolean) => number;
 
 export type SpreadsheetRecord = Record<string, unknown>;
 
@@ -26,10 +32,10 @@ export function spreadsheetColumns(headers: readonly string[], width: number, si
   }));
 }
 
-export function buildSpreadsheetGrid(headers: string[], rows: unknown[][]) {
+export function buildSpreadsheetGrid(headers: string[], rows: unknown[][], measure?: SpreadsheetTextMeasure) {
   let width = headers.length;
   for (const row of rows) if (row.length > width) width = row.length;
-  const columns = spreadsheetColumns(headers, width, fitSpreadsheetColumnSizes(headers, rows, width));
+  const columns = spreadsheetColumns(headers, width, fitSpreadsheetColumnSizes(headers, rows, width, measure));
   const source = rows.map((row) => {
     const record: Record<string, unknown> = {};
     for (let index = 0; index < width; index++) {
@@ -42,16 +48,16 @@ export function buildSpreadsheetGrid(headers: string[], rows: unknown[][]) {
 }
 
 // Each column is sized to its widest header or sampled value, like a spreadsheet's auto-fit, within the size bounds.
-export function fitSpreadsheetColumnSizes(headers: readonly string[], rows: readonly unknown[][], width: number): number[] {
+export function fitSpreadsheetColumnSizes(headers: readonly string[], rows: readonly unknown[][], width: number, measure: SpreadsheetTextMeasure = estimateTextWidth): number[] {
   const sample = rows.length > FIT_SAMPLE_ROWS ? rows.slice(0, FIT_SAMPLE_ROWS) : rows;
   return Array.from({ length: width }, (_, index) => {
-    let size = estimateTextWidth(spreadsheetColumnName(headers, index)) + FIT_CELL_PADDING + FIT_HEADER_CONTROL_WIDTH;
+    let size = measure(spreadsheetColumnName(headers, index).slice(0, FIT_MAX_TEXT_LENGTH), true) + FIT_CELL_PADDING + FIT_HEADER_CONTROL_WIDTH;
     for (const row of sample) {
       if (size >= SPREADSHEET_MAX_COLUMN_SIZE) break;
       const value = row[index];
       if (value === null || value === undefined || value === "") continue;
       const text = typeof value === "object" ? JSON.stringify(value) : String(value);
-      size = Math.max(size, estimateTextWidth(text) + FIT_CELL_PADDING);
+      size = Math.max(size, measure(text.slice(0, FIT_MAX_TEXT_LENGTH), false) + FIT_CELL_PADDING);
     }
     return Math.min(SPREADSHEET_MAX_COLUMN_SIZE, Math.max(SPREADSHEET_MIN_COLUMN_SIZE, Math.ceil(size)));
   });
@@ -64,6 +70,19 @@ function estimateTextWidth(text: string): number {
     if (width >= SPREADSHEET_MAX_COLUMN_SIZE) break;
   }
   return width;
+}
+
+// Measures with the grid's own computed fonts, so fitting follows the theme and whichever font the platform resolves.
+export function gridTextMeasure(grid: Element): SpreadsheetTextMeasure | undefined {
+  const cell = document.createElement("canvas").getContext("2d");
+  const header = document.createElement("canvas").getContext("2d");
+  if (!cell || !header) return undefined;
+  const style = getComputedStyle(grid);
+  const headerSize = style.getPropertyValue("--rg-theme-header-font-size").trim() || style.fontSize;
+  const headerWeight = style.getPropertyValue("--rg-theme-header-font-weight").trim() || "600";
+  cell.font = `${style.fontSize} ${style.fontFamily}`;
+  header.font = `${headerWeight} ${headerSize} ${style.fontFamily}`;
+  return (text, isHeader) => (isHeader ? header : cell).measureText(text).width;
 }
 
 // A blank header shows the column letter, but stays blank in the headers that get saved.
