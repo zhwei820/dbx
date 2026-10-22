@@ -125,6 +125,7 @@ import type { QueryEditability } from "@/lib/sql/sqlAnalysis";
 import { isTerminalTransferProgress } from "@/lib/backend/transferProgress";
 import type {
   ActivePluginSession,
+  ConnectionIdleClosedEvent,
   ConnectionLivenessMessage,
   PluginBinaryEvent,
   PluginConnectionActionResult,
@@ -497,6 +498,8 @@ export interface SnippetSyncSummary {
   bytes: number;
   exportedAt?: string;
   appVersion?: string;
+  remoteContentHash?: string;
+  unchanged: boolean;
   legacyCleanupRequiredId?: string;
 }
 
@@ -509,6 +512,10 @@ export interface SnippetDownloadResult {
 
 export interface SnippetTokenStatus {
   hasSavedToken: boolean;
+}
+
+export interface SnippetPassphraseStatus {
+  hasSavedPassphrase: boolean;
 }
 
 export interface AppSupportInfo {
@@ -543,6 +550,8 @@ export interface QueryPaginationExecutionPlanOptions {
 
 export interface QueryPaginationExecutionPlan {
   sqlToExecute: string;
+  /** Optional N+1 SQL page approved by the backend's strict read-only proof. */
+  pageProbeSql?: string;
   pageSql?: string;
   pageLimit?: number;
   pageOffset?: number;
@@ -869,6 +878,10 @@ export async function deleteAiConfig(configId: string): Promise<void> {
 
 export async function loadCcSwitchAiConfigs(): Promise<CcSwitchImportResult> {
   return invoke("load_cc_switch_ai_configs");
+}
+
+export async function loadMagpieAiConfigs(): Promise<CcSwitchImportResult> {
+  return invoke("load_magpie_ai_configs");
 }
 
 export async function loadAiConfig(): Promise<AiConfig | null> {
@@ -1225,6 +1238,18 @@ export async function forgetSnippetSavedToken(config: SnippetSyncConfig): Promis
   return invoke("forget_snippet_saved_token", { config });
 }
 
+export async function snippetPassphraseStatus(config: SnippetSyncConfig): Promise<SnippetPassphraseStatus> {
+  return invoke("snippet_passphrase_status", { config });
+}
+
+export async function saveSnippetSavedPassphrase(config: SnippetSyncConfig, passphrase: string): Promise<void> {
+  return invoke("save_snippet_saved_passphrase", { config, passphrase });
+}
+
+export async function forgetSnippetSavedPassphrase(config: SnippetSyncConfig): Promise<void> {
+  return invoke("forget_snippet_saved_passphrase", { config });
+}
+
 export async function snippetSyncSettings(provider: SnippetProvider, instanceUrl?: string): Promise<SnippetSyncSettings> {
   return invoke("snippet_sync_settings", { provider, instanceUrl });
 }
@@ -1241,7 +1266,7 @@ export async function snippetSyncInspect(config: SnippetSyncConfig, snippetPassp
   return invoke("snippet_sync_inspect", { config, snippetPassphrase, secretsPassphrase });
 }
 
-export async function snippetSyncUpload(config: SnippetSyncConfig, editorSettings?: unknown, snippetPassphrase?: string, includeSecrets = false, secretsPassphrase?: string, selection?: SyncSelection): Promise<SnippetSyncSummary> {
+export async function snippetSyncUpload(config: SnippetSyncConfig, editorSettings?: unknown, snippetPassphrase?: string, includeSecrets = false, secretsPassphrase?: string, selection?: SyncSelection, expectedRemoteContentHash?: string): Promise<SnippetSyncSummary> {
   return invoke("snippet_sync_upload", {
     config,
     editorSettings,
@@ -1249,6 +1274,7 @@ export async function snippetSyncUpload(config: SnippetSyncConfig, editorSetting
     includeSecrets,
     secretsPassphrase,
     selection,
+    expectedRemoteContentHash,
   });
 }
 
@@ -2288,6 +2314,14 @@ export async function buildDatabaseSearchSql(options: DatabaseSearchSqlOptions):
   return invoke("build_database_search_sql", { options });
 }
 
+export async function buildDatabaseSearchColumnsSql(options: import("@/lib/database/databaseSearchColumns").DatabaseSearchColumnsSqlOptions): Promise<{ sql: string } | null> {
+  return invoke("build_database_search_columns_sql", { options });
+}
+
+export async function buildDatabaseSearchProbeSql(options: import("@/lib/database/databaseSearchProbe").DatabaseSearchProbeSqlOptions): Promise<{ sql: string; includedIndices: number[] } | null> {
+  return invoke("build_database_search_probe_sql", { options });
+}
+
 export async function buildDatabaseStructureSearchSql(options: DatabaseStructureSearchSqlOptions): Promise<DatabaseStructureSearchSql | null> {
   return invoke("build_database_structure_search_sql", { options });
 }
@@ -3084,6 +3118,16 @@ export async function subscribeConnectionLiveness(onEvent: (event: ConnectionLiv
   return listen<ConnectionLivenessMessage>("dbx-connection-liveness", (event) => onEvent(event.payload));
 }
 
+/**
+ * 订阅后端「空闲自动断开」事件（issue #12112）。
+ *
+ * 后端在连接池因空闲超过 `idle_disconnect_secs` 关闭时发送 `dbx:connection-idle-closed`；
+ * 监听器收到的就是载荷本身（前端把该连接标记为未连接并保留已打开页签）。
+ */
+export async function subscribeConnectionIdleClosed(onEvent: (event: ConnectionIdleClosedEvent) => void): Promise<UnlistenFn> {
+  return listen<ConnectionIdleClosedEvent>("dbx:connection-idle-closed", (event) => onEvent(event.payload));
+}
+
 export async function listJdbcDrivers(): Promise<JdbcDriverInfo[]> {
   return invoke("list_jdbc_drivers");
 }
@@ -3384,6 +3428,16 @@ export interface McpServerStatus {
 
 export async function checkMcpServerStatus(): Promise<McpServerStatus> {
   return invoke("check_mcp_server_status");
+}
+
+export type McpKeychainAccess = "authorized" | "needs_authorization" | "key_missing" | "unknown" | "not_applicable";
+
+export async function checkMcpKeychainAccess(): Promise<McpKeychainAccess> {
+  return invoke("check_mcp_keychain_access");
+}
+
+export async function authorizeMcpKeychain(): Promise<string> {
+  return invoke("authorize_mcp_keychain");
 }
 
 export async function installMcpServer(): Promise<string> {
@@ -5790,6 +5844,7 @@ export async function listenSqlFileProgress(handler: (progress: SqlFileProgress)
 // --- Data Transfer ---
 export type TransferMode = "append" | "overwrite" | "upsert";
 export type TransferTableNameCase = "preserve" | "lower" | "upper";
+export type TransferColumnNameCase = "preserve" | "lower" | "upper";
 export type TransferOwnershipPolicy = "preserve" | "skip" | "reassignMissing";
 export type TransferContent = "structureAndData" | "structureOnly" | "dataOnly";
 export type TransferObjectKind = "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "SEQUENCE" | "EVENT";
@@ -5815,6 +5870,7 @@ export interface TransferRequest {
   objects: TransferObjectSelection[];
   mode: TransferMode;
   targetTableNameCase: TransferTableNameCase;
+  targetColumnNameCase?: TransferColumnNameCase;
   quoteTargetColumnNames: boolean;
   ownershipPolicy?: TransferOwnershipPolicy;
   batchSize: number;
@@ -5852,6 +5908,8 @@ export interface TransferStructurePreview {
   sql: string;
   tables: TransferStructurePreviewTable[];
   operations: TransferStructureOperation[];
+  /** Whether selected non-table schema objects are expanded in the SQL preview. */
+  schemaObjectsExpanded: boolean;
 }
 
 export interface TransferOwnershipPreview {

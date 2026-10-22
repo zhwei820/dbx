@@ -201,8 +201,11 @@ pub fn table_data_schema<'a>(
     driver_profile: Option<&str>,
     schema: Option<&'a str>,
 ) -> Option<&'a str> {
-    if database_type == Some(DatabaseType::Informix)
-        && driver_profile.is_some_and(|profile| profile.eq_ignore_ascii_case("gbase8s"))
+    // The frontend reports GBase 8s through the Informix dialect (see `connectionSqlDialect`), so
+    // the owner-free rule applies to both the dialect-mapped and the native `gbase8s` type.
+    if database_type == Some(DatabaseType::Gbase8s)
+        || (database_type == Some(DatabaseType::Informix)
+            && driver_profile.is_some_and(|profile| profile.eq_ignore_ascii_case("gbase8s")))
     {
         None
     } else {
@@ -516,15 +519,19 @@ pub fn database_qualified_table_name(
     database: Option<&str>,
     table_name: &str,
 ) -> Option<String> {
-    let database = database.map(str::trim).filter(|database| !database.is_empty())?;
+    let database = database.map(str::trim).filter(|database| !database.is_empty());
+    let schema = schema.map(str::trim).filter(|schema| !schema.is_empty());
     match database_type {
-        Some(DatabaseType::ClickHouse) => Some(format!(
-            "{}.{}",
-            quote_table_identifier(database_type, database),
-            quote_table_identifier(database_type, table_name)
-        )),
+        Some(DatabaseType::ClickHouse) => {
+            let namespace = database.or(schema)?;
+            Some(format!(
+                "{}.{}",
+                quote_table_identifier(database_type, namespace),
+                quote_table_identifier(database_type, table_name)
+            ))
+        }
         Some(DatabaseType::Mysql | DatabaseType::Goldendb | DatabaseType::Doris | DatabaseType::StarRocks) => {
-            let namespace = schema.map(str::trim).filter(|schema| !schema.is_empty()).unwrap_or(database);
+            let namespace = schema.or(database)?;
             Some(qualified_table_name_with_catalog(
                 database_type,
                 catalog,
@@ -534,9 +541,10 @@ pub fn database_qualified_table_name(
             ))
         }
         Some(DatabaseType::SqlServer) => {
+            let database = database?;
             // A linked-server schema already carries `server|catalog|schema`, so
             // prefixing it with the local database would produce a bogus name.
-            let schema = schema.map(str::trim).filter(|schema| !schema.is_empty())?;
+            let schema = schema?;
             if parse_sqlserver_linked_schema_ref(schema).is_some() {
                 return None;
             }
@@ -564,6 +572,9 @@ pub fn table_data_qualified_table_name(
             .filter(|schema| !schema.is_empty())
             .map(|schema| format!("{}.{table}", quote_iris_identifier(schema, identifier_quote)))
             .unwrap_or(table);
+    }
+    if database_type == Some(DatabaseType::Gbase8s) {
+        return quote_table_data_identifier(database_type, table_name, identifier_quote);
     }
     if !uses_connection_identifier_quote(database_type, identifier_quote) {
         return qualified_table_name(database_type, schema, table_name);
@@ -610,7 +621,7 @@ pub fn uses_connection_identifier_quote(database_type: Option<DatabaseType>, ide
         // Kyuubi normally uses Hive-family backticks, but a Trino-backed
         // session reports the ANSI double quote through connection info.
         || (database_type == Some(DatabaseType::Kyuubi) && identifier_quote.is_some())
-        || (database_type == Some(DatabaseType::Informix) && identifier_quote.is_some())
+        || (matches!(database_type, Some(DatabaseType::Informix | DatabaseType::Gbase8s)) && identifier_quote.is_some())
         || (matches!(database_type, Some(DatabaseType::Gaussdb | DatabaseType::OpenGauss | DatabaseType::Postgres))
             && identifier_quote.is_some())
 }
@@ -1347,9 +1358,17 @@ mod tests {
             Some("`db_9`.`t`")
         );
         assert_eq!(
+            database_qualified_table_name(Some(DatabaseType::Mysql), None, Some("db_9"), None, "t").as_deref(),
+            Some("`db_9`.`t`")
+        );
+        assert_eq!(
             database_qualified_table_name(Some(DatabaseType::ClickHouse), None, Some("default"), Some("dbx"), "t")
                 .as_deref(),
             Some("`dbx`.`t`")
+        );
+        assert_eq!(
+            database_qualified_table_name(Some(DatabaseType::ClickHouse), None, Some("default"), None, "t").as_deref(),
+            Some("`default`.`t`")
         );
         assert_eq!(
             database_qualified_table_name(Some(DatabaseType::SqlServer), None, Some("dbo"), Some("dbx"), "t")

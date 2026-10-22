@@ -12,7 +12,7 @@ import { useCellDetailEditor, type UseCellDetailEditorReturn } from "@/composabl
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { BINARY_CELL_DOWNLOAD_MODES, isBinaryCellColumnType, binaryCellUtf8Text, isBlobCellColumnType, type BinaryCellDownloadMode } from "@/lib/dataGrid/binaryCellDownload";
-import { int64TimestampPreview, isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
+import { cellDetailPreviewText, int64TimestampPreview, isGeometryColumnType } from "@/lib/dataGrid/cellDetailPresentation";
 import { isHexGeometry, renderWktOnCanvas } from "@/lib/dataGrid/geometryPreview";
 import type { DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
 import type { DatabaseType } from "@/types/database";
@@ -49,7 +49,7 @@ const jsonFormatted = computed(() => settingsStore.editorSettings.cellDetailJson
 const jsonView = computed(() => jsonFormatted.value && !!props.detail?.formattedJson);
 const wordWrapEnabled = computed(() => settingsStore.editorSettings.wordWrap);
 const binaryTextPreview = computed(() => (props.detail && isBlobCellColumnType(props.detail.type) ? binaryCellUtf8Text(props.detail.value, props.detail.type, props.databaseType) : null));
-const presentedValuePreview = computed(() => (binaryTextPreview.value === null ? props.detail?.rawValuePreview : props.detail?.displayValuePreview) ?? "");
+const presentedValuePreview = computed(() => (binaryTextPreview.value === null && props.detail ? cellDetailPreviewText(props.detail, props.databaseType) : props.detail?.displayValuePreview) ?? "");
 const timestampPreview = computed(() => (props.detail ? int64TimestampPreview(props.detail.value, props.detail.type) : null));
 
 function toggleWordWrap() {
@@ -103,6 +103,7 @@ watch(jsonPreviewContainer, async (element) => {
     jsonPreviewEditor = useCellDetailEditor({
       language: "json",
       readOnly: true,
+      onEscape: () => (open.value = false),
       editorTheme: () => settingsStore.editorSettings.theme,
       appAppearance: () => (isDark.value ? "dark" : "light"),
       appPalette: () => themePalette.value,

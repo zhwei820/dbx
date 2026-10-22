@@ -262,6 +262,7 @@ import type { DataCompareFromTablesOptions, DataCompareFromTablesPreparation, Da
 import { apiUrl, apiWebSocketUrl } from "@/lib/common/webPath";
 import type {
   ActivePluginSession,
+  ConnectionIdleClosedEvent,
   ConnectionLivenessMessage,
   PluginBinaryEvent,
   PluginConnectionActionResult,
@@ -821,6 +822,19 @@ export async function subscribeConnectionLiveness(onEvent: (event: ConnectionLiv
   const source = new EventSource(apiUrl("/api/connection/liveness-events"));
   source.onmessage = (message) => {
     onEvent(JSON.parse(message.data) as ConnectionLivenessMessage);
+  };
+  return () => source.close();
+}
+
+/**
+ * 「空闲自动断开」事件（issue #12112）：后端在某个连接的连接池因空闲超过
+ * `idle_disconnect_secs` 被关闭时下发。与 liveness 一样走 SSE，载荷也是同一份
+ * `{ connectionId }`，因此前端在 desktop（Tauri 事件）与 web 两种传输上解析同一种结构。
+ */
+export async function subscribeConnectionIdleClosed(onEvent: (event: ConnectionIdleClosedEvent) => void): Promise<() => void> {
+  const source = new EventSource(apiUrl("/api/connection/idle-closed-events"));
+  source.onmessage = (message) => {
+    onEvent(JSON.parse(message.data) as ConnectionIdleClosedEvent);
   };
   return () => source.close();
 }
@@ -1859,6 +1873,14 @@ export async function buildDatabaseSearchSql(options: DatabaseSearchSqlOptions):
   return post("/api/query/build-database-search-sql", { options });
 }
 
+export async function buildDatabaseSearchColumnsSql(options: import("@/lib/database/databaseSearchColumns").DatabaseSearchColumnsSqlOptions): Promise<{ sql: string } | null> {
+  return post("/api/query/build-database-search-columns-sql", { options });
+}
+
+export async function buildDatabaseSearchProbeSql(options: import("@/lib/database/databaseSearchProbe").DatabaseSearchProbeSqlOptions): Promise<{ sql: string; includedIndices: number[] } | null> {
+  return post("/api/query/build-database-search-probe-sql", { options });
+}
+
 export async function buildDatabaseStructureSearchSql(options: DatabaseStructureSearchSqlOptions): Promise<DatabaseStructureSearchSql | null> {
   return post("/api/query/build-database-structure-search-sql", { options });
 }
@@ -2353,6 +2375,10 @@ export async function loadCcSwitchAiConfigs(): Promise<import("@/types/ai").CcSw
   throw new Error("ccSwitchImportDesktopOnly");
 }
 
+export async function loadMagpieAiConfigs(): Promise<import("@/types/ai").CcSwitchImportResult> {
+  throw new Error("magpieImportDesktopOnly");
+}
+
 export async function loadDesktopSettings(): Promise<DesktopSettings> {
   try {
     const raw = safeLocalStorageGet(DESKTOP_SETTINGS_STORAGE_KEY);
@@ -2677,6 +2703,8 @@ export interface SnippetSyncSummary {
   bytes: number;
   exportedAt?: string;
   appVersion?: string;
+  remoteContentHash?: string;
+  unchanged: boolean;
   legacyCleanupRequiredId?: string;
 }
 
@@ -2689,6 +2717,10 @@ export interface SnippetDownloadResult {
 
 export interface SnippetTokenStatus {
   hasSavedToken: boolean;
+}
+
+export interface SnippetPassphraseStatus {
+  hasSavedPassphrase: boolean;
 }
 
 export async function webdavSyncTest(config: WebDavConfig): Promise<void> {
@@ -2772,6 +2804,18 @@ export async function forgetSnippetSavedToken(config: SnippetSyncConfig): Promis
   await post("/api/cloud-sync/snippet/forget-token", { config });
 }
 
+export async function snippetPassphraseStatus(config: SnippetSyncConfig): Promise<SnippetPassphraseStatus> {
+  return post("/api/cloud-sync/snippet/passphrase-status", { config });
+}
+
+export async function saveSnippetSavedPassphrase(config: SnippetSyncConfig, passphrase: string): Promise<void> {
+  await post("/api/cloud-sync/snippet/save-passphrase", { config, passphrase });
+}
+
+export async function forgetSnippetSavedPassphrase(config: SnippetSyncConfig): Promise<void> {
+  await post("/api/cloud-sync/snippet/forget-passphrase", { config });
+}
+
 export async function snippetSyncSettings(provider: SnippetProvider, instanceUrl?: string): Promise<SnippetSyncSettings> {
   return post("/api/cloud-sync/snippet/settings", { provider, instanceUrl });
 }
@@ -2788,7 +2832,7 @@ export async function snippetSyncInspect(config: SnippetSyncConfig, snippetPassp
   return post("/api/cloud-sync/snippet/inspect", { config, snippetPassphrase, secretsPassphrase });
 }
 
-export async function snippetSyncUpload(config: SnippetSyncConfig, editorSettings?: unknown, snippetPassphrase?: string, includeSecrets = false, secretsPassphrase?: string, selection?: SyncSelection): Promise<SnippetSyncSummary> {
+export async function snippetSyncUpload(config: SnippetSyncConfig, editorSettings?: unknown, snippetPassphrase?: string, includeSecrets = false, secretsPassphrase?: string, selection?: SyncSelection, expectedRemoteContentHash?: string): Promise<SnippetSyncSummary> {
   return post("/api/cloud-sync/snippet/upload", {
     config,
     editorSettings,
@@ -2796,6 +2840,7 @@ export async function snippetSyncUpload(config: SnippetSyncConfig, editorSetting
     includeSecrets,
     secretsPassphrase,
     selection,
+    expectedRemoteContentHash,
   });
 }
 
@@ -5592,6 +5637,14 @@ export async function checkMcpServerStatus(): Promise<import("@/lib/backend/taur
     uninstall_command: "npm uninstall -g @dbx-app/mcp-server",
     error: "MCP Server status is only available in the desktop app.",
   };
+}
+
+export async function checkMcpKeychainAccess(): Promise<import("@/lib/backend/tauri").McpKeychainAccess> {
+  return "not_applicable";
+}
+
+export async function authorizeMcpKeychain(): Promise<string> {
+  throw new Error("MCP Keychain authorization is only available in the desktop app.");
 }
 
 export async function installMcpServer(): Promise<string> {

@@ -48,6 +48,7 @@ import { parseSqlFilePathInput } from "./sqlFilePathInput";
 import { orderConnectionsForSidebarDisplay } from "@/lib/sidebar/connectionListSort";
 import SqlFileProgressIndicator from "./SqlFileProgressIndicator.vue";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
+import { readSqlFileCloseOnSuccess, writeSqlFileCloseOnSuccess } from "@/lib/sql/sqlFileExecutionOptions";
 import { translateBackendError } from "@/i18n/backend-errors";
 import { Check, CheckSquare, FileCode, FolderOpen, Loader2, Play, Square, X } from "@lucide/vue";
 
@@ -148,6 +149,10 @@ const loadingDatabases = ref(false);
 const preferredTarget = ref<ExternalSqlFileTarget>();
 const continueOnError = ref(false);
 const skipRelationalConstraints = ref(false);
+const closeOnSuccess = ref(readSqlFileCloseOnSuccess());
+watch(closeOnSuccess, (enabled) => {
+  writeSqlFileCloseOnSuccess(enabled);
+});
 const manualTransaction = ref(false);
 const txnSessionId = ref<string>();
 const commitUncertain = ref(false);
@@ -252,6 +257,17 @@ async function finishTransaction(commit: boolean) {
       if (progress.value) updateSqlFileTask(executionId.value, { ...progress.value, status: terminalStatus.value });
     }
     await refreshTargetAfterImport(sqlFileExecutionTarget());
+    if (committed && !outcomeUnknown) {
+      const failureCount = progress.value?.failureCount ?? 0;
+      if (failureCount > 0) {
+        toast(t("sqlFile.completedWithErrors", { succeeded: progress.value?.successCount ?? 0, failed: failureCount }), 5000);
+      } else {
+        toast(t("sqlFile.executeSuccess"), 3000);
+        if (closeOnSuccess.value) {
+          open.value = false;
+        }
+      }
+    }
     return true;
   } catch (error: any) {
     toast(error?.message || String(error), 5000);
@@ -516,6 +532,7 @@ function resetState() {
   continueOnError.value = false;
   skipRelationalConstraints.value = false;
   manualTransaction.value = false;
+  closeOnSuccess.value = readSqlFileCloseOnSuccess();
   restoreSelectedTables.value = false;
   resetExecution();
 }
@@ -751,6 +768,7 @@ async function startExecution() {
   const taskLabel = previews.value.length === 1 ? previews.value[0]!.fileName : `${previews.value[0]!.fileName} (+${previews.value.length - 1})`;
   activeExecutionTask.value = addSqlFileTask(batchId, taskLabel, filePathDisplay.value);
   let completedSuccessfully = false;
+  let terminal: SqlFileProgress | null = null;
 
   try {
     await store.ensureConnected(connectionId.value);
@@ -848,7 +866,8 @@ async function startExecution() {
         },
         executionPaths,
       );
-      const terminal = await terminalProgress;
+      terminal = await terminalProgress;
+      progress.value = terminal;
       if (terminal.status === "error") {
         throw new Error(terminal.error || "SQL file execution failed");
       }
@@ -873,7 +892,19 @@ async function startExecution() {
           }
         }
       }
-      if (!txnSessionId.value) await refreshTargetAfterImport(target);
+      if (!txnSessionId.value) {
+        await refreshTargetAfterImport(target);
+        const finalProgress = terminal ?? progress.value;
+        const failureCount = finalProgress?.failureCount ?? 0;
+        if (failureCount > 0) {
+          toast(t("sqlFile.completedWithErrors", { succeeded: finalProgress?.successCount ?? 0, failed: failureCount }), 5000);
+        } else {
+          toast(t("sqlFile.executeSuccess"), 3000);
+          if (closeOnSuccess.value) {
+            open.value = false;
+          }
+        }
+      }
     }
   } catch (e: any) {
     terminalStatus.value = cancelRequested.value ? "cancelled" : "error";
@@ -1145,6 +1176,11 @@ watch(
             <CheckSquare v-if="skipRelationalConstraints" class="w-3.5 h-3.5 text-primary shrink-0" />
             <Square v-else class="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
             {{ t("sqlFile.skipRelationalConstraints") }}
+          </button>
+          <button type="button" class="flex items-center gap-2 text-xs text-left" :disabled="executionLocked" @click="closeOnSuccess = !closeOnSuccess">
+            <CheckSquare v-if="closeOnSuccess" class="w-3.5 h-3.5 text-primary shrink-0" />
+            <Square v-else class="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
+            {{ t("sqlFile.closeOnSuccess") }}
           </button>
         </div>
 

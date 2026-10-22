@@ -17,6 +17,7 @@ import { createContentSurfaceEventForwarders } from "@/lib/tabs/contentSurfaceEv
 import type { ContentAreaSurfaceEmits, ContentAreaSurfaceProps, StatementRange } from "./querySurfaces";
 import type { QueryTab, TableInfoTab } from "@/types/database";
 import type { AiConversationBinding } from "@/lib/ai/aiConversationBinding";
+import { isObjectDependencySection } from "@/lib/database/objectDependencyDetails";
 
 defineOptions({ inheritAttrs: false });
 
@@ -75,6 +76,9 @@ defineExpose({
   },
   focusWhere: () => activeEditorGroup()?.focusWhere() ?? false,
   openGoToColumn: () => activeEditorGroup()?.openGoToColumn() ?? false,
+  openConnectionPicker: () => activeEditorGroup()?.openConnectionPicker() ?? false,
+  openDatabasePicker: () => activeEditorGroup()?.openDatabasePicker() ?? false,
+  openSchemaPicker: () => activeEditorGroup()?.openSchemaPicker() ?? false,
   openTableStructureEditor: (initialTab?: TableInfoTab) => activeEditorGroup()?.openTableStructureEditor?.(initialTab) ?? false,
   refreshData: (target: Element | null = null) => {
     const element = commandTargetElement(target);
@@ -99,6 +103,7 @@ defineExpose({
     return group?.handleModRTarget(target) ?? false;
   },
   requestQueryEditorExecute: (tabId?: string) => editorGroupForTab(tabId)?.requestQueryEditorExecute() ?? false,
+  requestQueryEditorExecuteAll: (tabId?: string) => editorGroupForTab(tabId)?.requestQueryEditorExecuteAll() ?? false,
   captureQueryEditorExecutionSnapshot: (tabId?: string) => editorGroupForTab(tabId)?.captureQueryEditorExecutionSnapshot(),
   requestQueryEditorExecuteInNewResultTab: (tabId?: string) => editorGroupForTab(tabId)?.requestQueryEditorExecuteInNewResultTab() ?? false,
   requestQueryEditorPreviewChanges: (stackSql?: string) => activeEditorGroup()?.requestQueryEditorPreviewChanges(stackSql) ?? false,
@@ -158,7 +163,7 @@ const showResultPane = computed({
     if (tab?.mode === "query") queryStore.updateTabUiState(tab.id, { resultPaneOpen: open });
   },
 });
-const isResultPaneVisible = computed(() => hasSharedOutput.value && showResultPane.value);
+const isResultPaneVisible = computed(() => hasSharedOutput.value && showResultPane.value && !isObjectDependencySection(activeQueryTab.value!));
 // Keep the pane mounted, but apply its target size immediately so available
 // results never wait for an expansion animation before becoming visible.
 const resultPaneTargetSize = computed(() => (isResultPaneVisible.value ? resultPaneSize.value : 0));
