@@ -2179,6 +2179,7 @@ async fn execute_select_prepared(
     Ok(PreparedSelectOutcome::Complete(Box::new(QueryResult {
         columns,
         column_types,
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns,
         spatial_values,
@@ -2288,6 +2289,7 @@ async fn execute_select_text(
     Ok(QueryResult {
         column_types: matching_pg_text_column_types(&columns, prepared_column_types),
         columns,
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns,
         spatial_values,
@@ -3867,8 +3869,12 @@ fn list_opengauss_databases_sql() -> &'static str {
      ORDER BY datname"
 }
 
-fn database_metadata_sql() -> &'static str {
-    "SELECT d.datname, \
+fn database_metadata_sql(shared_comments: bool) -> String {
+    // Database comments are shared objects on PostgreSQL and openGauss, but
+    // other PG-protocol servers must keep their existing catalog query.
+    let comment_function = if shared_comments { "shobj_description" } else { "obj_description" };
+    format!(
+        "SELECT d.datname, \
             CASE \
               WHEN has_database_privilege(d.datname, 'CONNECT') \
                 OR COALESCE(( \
@@ -3879,11 +3885,12 @@ fn database_metadata_sql() -> &'static str {
               THEN pg_database_size(d.oid) \
               ELSE NULL \
             END AS size_bytes, \
-            obj_description(d.oid, 'pg_database') AS comment, \
+            {comment_function}(d.oid, 'pg_database') AS comment, \
             pg_encoding_to_char(d.encoding) AS default_charset \
      FROM pg_database d \
      WHERE datallowconn = true \
      ORDER BY d.datname"
+    )
 }
 
 fn database_storage_sql() -> &'static str {
@@ -3947,10 +3954,11 @@ pub async fn list_opengauss_databases(pool: &Pool) -> Result<Vec<DatabaseInfo>, 
         .collect())
 }
 
-pub async fn list_database_metadata(pool: &Pool) -> Result<Vec<DatabaseInfo>, String> {
+pub async fn list_database_metadata(pool: &Pool, shared_comments: bool) -> Result<Vec<DatabaseInfo>, String> {
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
     let client = &EncodingClient::new(&client);
-    let rows = postgres_query_cached(client, database_metadata_sql(), &[]).await.map_err(|e| e.to_string())?;
+    let sql = database_metadata_sql(shared_comments);
+    let rows = postgres_query_cached(client, &sql, &[]).await.map_err(|e| e.to_string())?;
     Ok(rows
         .iter()
         .map(|row| DatabaseInfo {
@@ -4464,12 +4472,11 @@ pub async fn get_table_partition_info(
     }
 
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 2] = [&schema, &table];
-    let rows = query_with_compat_fallback(
-        "get_table_partition_info",
-        &[postgres_table_partition_info_sql(), postgres_table_partition_info_compat_sql()],
-        |sql| postgres_query_cached(client, sql, &params),
-    )
-    .await?;
+    let rows =
+        query_with_compat_fallback("get_table_partition_info", &postgres_table_partition_info_query_tiers(), |sql| {
+            postgres_query_cached(client, sql, &params)
+        })
+        .await?;
     let Some(row) = rows.first() else {
         let inherits_parents = if has_inherits_parent {
             get_table_inherits_parents_inner(client, schema, table).await?
@@ -5058,6 +5065,27 @@ fn postgres_partition_tree_compat_sql() -> &'static str {
      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f')"
 }
 
+/// Redshift is based on PostgreSQL 8.0.2 and has neither `pg_foreign_table`
+/// nor `pg_foreign_server` (both PostgreSQL 9.1+), so the pre-10 compat query
+/// still fails there. Keep the same column shape with NULL foreign-table
+/// fields; Redshift has no declarative partitions, so the requested relation
+/// is the whole tree (issue #13293).
+fn postgres_partition_tree_legacy_sql() -> &'static str {
+    "SELECT c.oid::bigint AS oid, n.nspname::text AS schema, c.relname::text AS relname, \
+            NULL::bigint AS parent_oid, NULL::text AS parent_schema, NULL::text AS parent_relname, \
+            c.relkind::text AS relkind, \
+            NULL::text AS partition_bound, NULL::text AS partition_key, \
+            NULL::text AS foreign_server, \
+            NULL::text[] AS foreign_options \
+     FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f')"
+}
+
+fn postgres_partition_tree_query_tiers() -> [&'static str; 3] {
+    [postgres_partition_tree_sql(), postgres_partition_tree_compat_sql(), postgres_partition_tree_legacy_sql()]
+}
+
 /// The whole partition tree rooted at (schema, table) — the root itself plus
 /// every descendant partition at any depth — plus each node's partition info,
 /// in a single round trip. Used by `pg_ddl_with_partitions` instead of
@@ -5072,12 +5100,11 @@ pub async fn fetch_postgres_partition_tree(
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
     let client = &EncodingClient::new(&client);
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 2] = [&schema, &table];
-    let rows = query_with_compat_fallback(
-        "fetch_postgres_partition_tree",
-        &[postgres_partition_tree_sql(), postgres_partition_tree_compat_sql()],
-        |sql| postgres_query_cached(client, sql, &params),
-    )
-    .await?;
+    let rows =
+        query_with_compat_fallback("fetch_postgres_partition_tree", &postgres_partition_tree_query_tiers(), |sql| {
+            postgres_query_cached(client, sql, &params)
+        })
+        .await?;
     Ok(rows
         .into_iter()
         .filter_map(|row| {
@@ -5405,6 +5432,7 @@ async fn list_indexes_for_relations_with_sql(
         let all_key_options: Vec<i16> = row.try_get::<_, Vec<i16>>(12).unwrap_or_default();
         let key_options = if all_key_options.len() == split_at { all_key_options } else { Vec::new() };
         result.entry(relid).or_default().push(IndexInfo {
+            owner: None,
             key_directions: Vec::new(),
             visibility: None,
             key_metadata_complete: false,
@@ -6238,6 +6266,28 @@ fn postgres_table_partition_info_compat_sql() -> &'static str {
      LIMIT 1"
 }
 
+/// Redshift (PostgreSQL 8.0.2) lacks `pg_foreign_table`/`pg_foreign_server`
+/// (PostgreSQL 9.1+), so the pre-10 compat query still fails there. Keep the
+/// same column shape with NULL foreign-table fields (issue #13293).
+fn postgres_table_partition_info_legacy_sql() -> &'static str {
+    "SELECT NULL::text AS parent_schema, NULL::text AS parent_table, NULL::text AS partition_bound, \
+            NULL::text AS partition_key, \
+            NULL::text AS foreign_server, \
+            NULL::text[] AS foreign_options \
+     FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f') \
+     LIMIT 1"
+}
+
+fn postgres_table_partition_info_query_tiers() -> [&'static str; 3] {
+    [
+        postgres_table_partition_info_sql(),
+        postgres_table_partition_info_compat_sql(),
+        postgres_table_partition_info_legacy_sql(),
+    ]
+}
+
 fn postgres_table_inherits_parents_sql() -> &'static str {
     // Traditional-inheritance parents only: a declarative partition child
     // is also a `pg_inherits` row, but its parent has relkind 'p', which we
@@ -6569,6 +6619,38 @@ fn redshift_routine_objects_sql() -> &'static str {
        AND schema_name = $1 \
        AND function_type IN ('STORED PROCEDURE', 'REGULAR FUNCTION') \
      ORDER BY sort_order, object_name"
+}
+
+/// Source of a Redshift stored procedure.
+///
+/// Redshift's `pg_proc` is the PostgreSQL 8.0 catalog: it has no `prokind`
+/// (PostgreSQL 11) and no `pg_get_functiondef` (PostgreSQL 8.4). The routine
+/// kind is exposed by the Redshift-only `pg_proc_info` view, and a stored
+/// procedure's complete `CREATE [OR REPLACE] PROCEDURE` text is stored in
+/// `pg_proc.prosrc`, so it is read directly (issue #13293). The signature from
+/// `svv_redshift_functions` only orders same-named procedures; it is not a
+/// filter so a formatting difference can never hide the only match.
+pub fn redshift_procedure_source_sql(schema: &str, name: &str, signature: Option<&str>) -> String {
+    let signature_order = signature
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            format!(
+                "CASE WHEN pg_catalog.oidvectortypes(p.proargtypes) = {} THEN 0 ELSE 1 END, ",
+                pg_quote_literal(value)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "SELECT p.prosrc \
+         FROM pg_catalog.pg_proc p \
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
+         JOIN pg_catalog.pg_proc_info pi ON pi.prooid = p.oid \
+         WHERE n.nspname = {} AND p.proname = {} AND pi.prokind = 'p' \
+         ORDER BY {signature_order}p.oid LIMIT 1",
+        pg_quote_literal(schema),
+        pg_quote_literal(name)
+    )
 }
 
 /// SQL for listing user-defined types in one schema.
@@ -7890,6 +7972,11 @@ fn build_custom_type_ddl(
                 warnings: all,
             }
         }
+        CustomTypeKind::Object | CustomTypeKind::Collection | CustomTypeKind::Other => CustomTypeDdl {
+            sql: String::new(),
+            complete: false,
+            warnings: vec!["Not a PostgreSQL custom type category".to_string()],
+        },
     }
 }
 
@@ -7964,6 +8051,9 @@ pub async fn get_custom_type_details(pool: &Pool, schema: &str, name: &str) -> R
             warnings.extend(custom_type_range_attributes(client, info.oid, true, &mut properties).await);
         }
         CustomTypeKind::Base => {}
+        CustomTypeKind::Object | CustomTypeKind::Collection | CustomTypeKind::Other => {
+            return Err("not a PostgreSQL custom type category".to_string());
+        }
     }
 
     let ddl = build_custom_type_ddl(schema, name, kind, &info, &members, &properties, &warnings);
@@ -7975,6 +8065,7 @@ pub async fn get_custom_type_details(pool: &Pool, schema: &str, name: &str) -> R
         members,
         properties,
         ddl: Some(ddl),
+        oracle_metadata: None,
     })
 }
 
@@ -8549,6 +8640,42 @@ fn is_postgres_user_placeholder(element: &str) -> bool {
     matches!(element, "$user" | "\"$user\"")
 }
 
+fn postgres_quoted_search_path_elements(configured: &str) -> Vec<String> {
+    let mut elements = Vec::new();
+    // Match PostgreSQL's scanner_isspace; Unicode whitespace can be name data.
+    let is_space = |ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{b}' | '\u{c}');
+    let mut remaining = configured.trim_matches(is_space);
+    // The server has already validated this GUC list. Its unquoted names can
+    // contain punctuation that SQL identifiers require us to quote.
+    while !remaining.is_empty() {
+        let quoted = remaining.starts_with('"');
+        let mut end = remaining.len();
+        if quoted {
+            let mut chars = remaining.char_indices().skip(1).peekable();
+            while let Some((index, ch)) = chars.next() {
+                if ch == '"' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                        chars.next();
+                    } else {
+                        end = index + 1;
+                        break;
+                    }
+                }
+            }
+        } else if let Some(index) = remaining.find(',') {
+            end = index;
+        }
+        let (element, rest) = remaining.split_at(end);
+        elements.push(if quoted {
+            element.to_string()
+        } else {
+            pg_quote_ident(&element.trim_matches(is_space).to_ascii_lowercase())
+        });
+        remaining = rest.trim_start_matches(is_space).strip_prefix(',').unwrap_or("").trim_start_matches(is_space);
+    }
+    elements
+}
+
 fn postgres_set_preserved_search_path_sql(
     schema: &str,
     context: PostgresSearchPathContext,
@@ -8562,7 +8689,6 @@ fn postgres_set_preserved_search_path_sql(
     } else {
         ""
     };
-    let configured = baseline.configured.trim();
     // Redshift rejects the "$user" placeholder inside `SET search_path` even
     // though `current_setting('search_path')` reports it, so any preserved-path
     // statement containing the element fails with a syntax error. Drop the
@@ -8570,25 +8696,20 @@ fn postgres_set_preserved_search_path_sql(
     // also mangle ordinary identifiers containing that substring); keeping the
     // placeholder is pointless while switching schemas anyway because the
     // selected schema is already prepended first.
-    let configured_elements: Vec<&str> = configured.split(',').map(str::trim).collect();
+    let configured_elements = postgres_quoted_search_path_elements(&baseline.configured);
     let drops_user_placeholder = configured_elements.iter().any(|element| is_postgres_user_placeholder(element));
-    let configured = if drops_user_placeholder {
-        configured_elements
-            .iter()
-            .filter(|element| !is_postgres_user_placeholder(element))
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ")
-    } else {
-        configured.to_string()
-    };
+    let configured = configured_elements
+        .iter()
+        .filter(|element| !is_postgres_user_placeholder(element))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
     let selected_schema = pg_quote_ident(schema);
     // The first resolved schema can come from "$user". Once that placeholder is
     // removed for compatible servers, the selected schema must replace it unless
     // the configured path also contains that schema explicitly.
-    let selected_schema_is_explicit = configured_elements
-        .iter()
-        .any(|element| !is_postgres_user_placeholder(element) && (*element == schema || *element == selected_schema));
+    let selected_schema_is_explicit =
+        configured_elements.iter().any(|element| !is_postgres_user_placeholder(element) && *element == selected_schema);
     let selected_schema_was_removed = drops_user_placeholder
         && baseline.first_resolved_schema.as_deref() == Some(schema)
         && !selected_schema_is_explicit;
@@ -8836,6 +8957,7 @@ pub async fn execute_query_with_max_rows(
             QueryResult {
                 columns: vec![],
                 column_types: Vec::new(),
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: Vec::new(),
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -9676,6 +9798,7 @@ async fn execute_query_with_max_rows_inner(
         affected.map_err(pg_error_to_string).map(|affected| QueryResult {
             columns: vec![],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -9929,6 +10052,7 @@ async fn list_indexes_with_sql(
             let all_key_options: Vec<i16> = row.try_get::<_, Vec<i16>>(11).unwrap_or_default();
             let key_options = if all_key_options.len() == split_at { all_key_options } else { Vec::new() };
             IndexInfo {
+                owner: None,
                 key_directions: Vec::new(),
                 visibility: None,
                 key_metadata_complete: false,
@@ -12215,8 +12339,66 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO application, extensions, public, pg_catalog"
+            "SET search_path TO \"application\", \"extensions\", \"public\", pg_catalog"
         );
+    }
+
+    #[test]
+    fn postgres_search_path_quotes_preserved_identifiers() {
+        for (configured, first_schema, selected_schema, expected_path) in [
+            (
+                "certification-lvpeng3, public",
+                "certification-lvpeng3",
+                "certification-lvpeng3",
+                r#""certification-lvpeng3", "public", pg_catalog"#,
+            ),
+            (
+                "certification-lvpeng3, public",
+                "certification-lvpeng3",
+                "other-schema",
+                r#""other-schema", "certification-lvpeng3", "public", pg_catalog"#,
+            ),
+            (
+                r#""tenant,alpha", "$user", public"#,
+                "tenant,alpha",
+                "tenant,alpha",
+                r#""tenant,alpha", "public", pg_catalog"#,
+            ),
+            (r#""a""b", public"#, "a\"b", "a\"b", r#""a""b", "public", pg_catalog"#),
+            (r#"foo"bar, public"#, "foo\"bar", "foo\"bar", r#""foo""bar", "public", pg_catalog"#),
+            ("MiXeD-Name, public", "mixed-name", "mixed-name", r#""mixed-name", "public", pg_catalog"#),
+            (r#""MiXeD Name", public"#, "MiXeD Name", "MiXeD Name", r#""MiXeD Name", "public", pg_catalog"#),
+            ("select, public", "select", "select", r#""select", "public", pg_catalog"#),
+            ("APPLICATION, $user, public", "application", "application", r#""application", "public", pg_catalog"#),
+            ("$USER, public", "public", "application", r#""application", "public", pg_catalog"#),
+            (r#""$USER", public"#, "$USER", "$USER", r#""$USER", "public", pg_catalog"#),
+            ("\u{2003}tenant,public", "\u{2003}tenant", "\u{2003}tenant", "\"\u{2003}tenant\", \"public\", pg_catalog"),
+            ("tenant\u{2003},public", "tenant\u{2003}", "tenant\u{2003}", "\"tenant\u{2003}\", \"public\", pg_catalog"),
+            (
+                "\u{b}application\u{b},\u{c}public\u{c}",
+                "application",
+                "application",
+                r#""application", "public", pg_catalog"#,
+            ),
+        ] {
+            let baseline = PostgresSearchPathBaseline {
+                configured: configured.to_string(),
+                first_resolved_schema: Some(first_schema.to_string()),
+                has_explicit_pg_catalog: false,
+            };
+            for (context, scope) in [
+                (PostgresSearchPathContext::Query, ""),
+                (PostgresSearchPathContext::Transaction, ""),
+                (PostgresSearchPathContext::LocalTransaction, " LOCAL"),
+                (PostgresSearchPathContext::LocalQueryTransaction, " LOCAL"),
+            ] {
+                assert_eq!(
+                    postgres_set_preserved_search_path_sql(selected_schema, context, &baseline),
+                    format!("SET{scope} search_path TO {expected_path}"),
+                    "configured={configured:?}, selected={selected_schema:?}, context={context:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -12228,7 +12410,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO \"application\", extensions, public, pg_catalog"
+            "SET search_path TO \"application\", \"extensions\", \"public\", pg_catalog"
         );
         assert_eq!(
             postgres_set_preserved_search_path_sql(
@@ -12236,7 +12418,7 @@ mod tests {
                 PostgresSearchPathContext::LocalQueryTransaction,
                 &baseline,
             ),
-            "SET LOCAL search_path TO \"application\", extensions, public, pg_catalog"
+            "SET LOCAL search_path TO \"application\", \"extensions\", \"public\", pg_catalog"
         );
     }
 
@@ -12249,7 +12431,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO \"dwd_views\", public, pg_catalog"
+            "SET search_path TO \"dwd_views\", \"public\", pg_catalog"
         );
 
         let bare_baseline = PostgresSearchPathBaseline {
@@ -12259,7 +12441,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &bare_baseline),
-            "SET search_path TO \"dwd_views\", public, pg_catalog"
+            "SET search_path TO \"dwd_views\", \"public\", pg_catalog"
         );
     }
 
@@ -12273,7 +12455,7 @@ mod tests {
 
         assert_eq!(
             postgres_set_preserved_search_path_sql("dbx_test", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO \"dbx_test\", public, pg_catalog"
+            "SET search_path TO \"dbx_test\", \"public\", pg_catalog"
         );
 
         let explicit_baseline = PostgresSearchPathBaseline {
@@ -12283,7 +12465,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dbx_test", PostgresSearchPathContext::Query, &explicit_baseline),
-            "SET search_path TO dbx_test, public, pg_catalog"
+            "SET search_path TO \"dbx_test\", \"public\", pg_catalog"
         );
     }
 
@@ -12340,7 +12522,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO \"dwd_views\", my$user_schema, \"$user_backup\", public, pg_catalog"
+            "SET search_path TO \"dwd_views\", \"my$user_schema\", \"$user_backup\", \"public\", pg_catalog"
         );
     }
 
@@ -12353,7 +12535,7 @@ mod tests {
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
-            "SET search_path TO \"application\", extensions, pg_catalog, public"
+            "SET search_path TO \"application\", \"extensions\", \"pg_catalog\", \"public\""
         );
     }
 
@@ -12443,6 +12625,22 @@ mod tests {
     fn database_list_does_not_collect_storage_usage() {
         assert!(list_databases_sql().contains("pg_database"));
         assert!(!list_databases_sql().contains("pg_database_size"));
+    }
+
+    #[test]
+    fn database_metadata_reads_shared_database_comments() {
+        let sql = database_metadata_sql(true);
+        assert!(sql.contains("shobj_description(d.oid, 'pg_database') AS comment"));
+        assert!(sql.contains("FROM pg_database d"));
+        assert!(sql.contains("has_database_privilege"));
+        assert!(sql.contains("pg_database_size(d.oid)"));
+    }
+
+    #[test]
+    fn database_metadata_keeps_legacy_comments_for_other_pg_servers() {
+        let sql = database_metadata_sql(false);
+        assert!(sql.contains("obj_description(d.oid, 'pg_database') AS comment"));
+        assert!(!sql.contains("shobj_description"));
     }
 
     #[test]
@@ -16172,6 +16370,51 @@ mod tests {
     }
 
     #[test]
+    fn redshift_procedure_source_uses_proc_info_and_prosrc() {
+        let sql = redshift_procedure_source_sql("tenant's", "load_orders", None);
+        assert!(sql.contains("SELECT p.prosrc"));
+        assert!(sql.contains("JOIN pg_catalog.pg_proc_info pi ON pi.prooid = p.oid"));
+        assert!(sql.contains("pi.prokind = 'p'"));
+        assert!(sql.contains("n.nspname = 'tenant''s'"));
+        assert!(sql.contains("p.proname = 'load_orders'"));
+        // Redshift's pg_proc is the 8.0 catalog; these would fail there.
+        assert!(!sql.contains("pg_get_functiondef"));
+        assert!(!sql.contains("p.prokind"));
+    }
+
+    #[test]
+    fn redshift_procedure_source_orders_by_signature_without_filtering() {
+        let sql = redshift_procedure_source_sql("public", "load_orders", Some("integer, character varying"));
+        assert!(sql.contains(
+            "CASE WHEN pg_catalog.oidvectortypes(p.proargtypes) = 'integer, character varying' THEN 0 ELSE 1 END, p.oid"
+        ));
+        assert!(!sql.contains("AND pg_catalog.oidvectortypes"));
+        let without_signature = redshift_procedure_source_sql("public", "load_orders", None);
+        assert!(without_signature.contains("ORDER BY p.oid LIMIT 1"));
+        assert!(!without_signature.contains("CASE WHEN"));
+    }
+
+    #[test]
+    fn partition_query_tiers_fall_back_without_foreign_catalogs() {
+        let tree = postgres_partition_tree_query_tiers();
+        assert!(tree[0].contains("pg_catalog.pg_foreign_table"));
+        assert!(tree[1].contains("pg_catalog.pg_foreign_table"));
+        assert!(!tree[2].contains("pg_foreign_table"));
+        assert!(!tree[2].contains("pg_foreign_server"));
+        assert!(!tree[2].contains("relispartition"));
+        assert!(!tree[2].contains("pg_get_partkeydef"));
+        assert!(tree[2].contains("NULL::text[] AS foreign_options"));
+
+        let info = postgres_table_partition_info_query_tiers();
+        assert!(info[1].contains("pg_catalog.pg_foreign_table"));
+        assert!(!info[2].contains("pg_foreign_table"));
+        assert!(!info[2].contains("pg_foreign_server"));
+        assert!(!info[2].contains("relispartition"));
+        assert!(!info[2].contains("pg_get_expr"));
+        assert!(info[2].contains("NULL::text[] AS foreign_options"));
+    }
+
+    #[test]
     fn redshift_relation_objects_sql_avoids_unsupported_postgres_helpers() {
         let sql = list_objects_sql(false, false, false, false, true, false, false, false);
         assert!(sql.contains("pg_catalog.pg_class"));
@@ -16205,6 +16448,7 @@ mod tests {
                 "character_maximum_length".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: Vec::new(),
             spatial_values: Vec::new(),

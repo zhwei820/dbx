@@ -107,6 +107,9 @@ import DataGridCellDetailHexViewer from "@/components/grid/DataGridCellDetailHex
 import TemporalCellEditor from "@/components/grid/TemporalCellEditor.vue";
 import EnumCellEditor from "@/components/grid/EnumCellEditor.vue";
 import DataGridReadonlyTextSelection from "@/components/grid/DataGridReadonlyTextSelection.vue";
+import ObjectDependenciesPanel from "@/components/objects/ObjectDependenciesPanel.vue";
+import { objectDependencyTarget, type ObjectDependencyTarget, type ObjectDetailsSection } from "@/lib/database/objectDependencyDetails";
+import type { SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import GridSnapshotDialog from "@/components/grid/GridSnapshotDialog.vue";
 import type { QueryResult, ColumnInfo, ConstraintInfo, DatabaseType, ForeignKeyInfo, IndexInfo, ObjectStatistics, PgTablePartitioning, TriggerInfo, TableInfoTab, QueryResultSourceColumnRef, QueryPageJumpProgress } from "@/types/database";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
@@ -143,6 +146,7 @@ import {
   shouldIncludeSyntheticRowId,
   showsKeylessEditWarning,
 } from "@/lib/table/tableEditing";
+import { rowIdLocatorUnsupported } from "@/lib/table/tableRowIdSupport";
 import { buildDataGridConditionalUpdateSql, buildDataGridContextFilterCondition, buildDataGridCountSql, buildHiveTablePropertiesSql, type DataGridContextFilterMode } from "@/lib/dataGrid/dataGridSql";
 import { sumGridCountValues } from "@/lib/dataGrid/dataGridCountValue";
 import {
@@ -294,6 +298,7 @@ import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
 import { dataGridPreviewLabelKey, dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
 import { buildDataGridSavedRowRefreshPlan, dataGridSavedRowRefreshPatches, executeDataGridSavedRowRefreshQuery } from "@/lib/dataGrid/dataGridSavedRowRefresh";
 import type { QueryEditabilityReason } from "@/lib/sql/sqlAnalysis";
+import type { DataGridSqlPreview } from "./dataGridSqlPreview";
 import { sqlWithoutCommentsForCopy } from "@/lib/sql/sqlWithoutCommentsForCopy";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import { EDITOR_FONT_FAMILY_CSS_VAR } from "@/lib/editor/editorThemes";
@@ -725,6 +730,7 @@ function logDataGridTiming(message: string, payload?: Record<string, unknown>) {
 }
 
 const emit = defineEmits<{
+  viewSql: [preview: DataGridSqlPreview];
   reload: [sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent];
   paginate: [offset: number, limit: number, whereInput?: string, orderBy?: string, appendResult?: boolean];
   sort: [column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string];
@@ -734,6 +740,7 @@ const emit = defineEmits<{
   "local-column-filters-change": [value: Record<string, string[]>];
   changeQueryTimeout: [connectionId: string];
   cancel: [];
+  openDependencyObject: [context: ObjectDependencyTarget, target: SqlObjectNavigationTarget];
 }>();
 
 const autoRefresh = useDataGridAutoRefresh({
@@ -862,6 +869,16 @@ const columnTypeMap = computed(() => {
 });
 const resolvedConnectionConfig = computed(() => connectionStore.getConfig(props.connectionId ?? ""));
 const resolvedDatabaseType = computed(() => props.databaseType ?? effectiveDatabaseTypeForConnection(resolvedConnectionConfig.value));
+const tableRelationsSection = ref<ObjectDetailsSection>("dependencies");
+const tableDependencyTarget = computed(() => {
+  const metadata = props.tableMeta;
+  const database = metadata?.database || props.database;
+  if (!metadata?.tableName || !props.connectionId || !database) return undefined;
+  return objectDependencyTarget({ connectionId: props.connectionId, database, catalog: metadata.catalog, schema: metadata.schema || props.schema || database, name: metadata.tableName, objectType: (metadata.tableType || "TABLE").toUpperCase().replaceAll(" ", "_") }, resolvedDatabaseType.value);
+});
+function viewRelationSql(context: ObjectDependencyTarget, sql: string) {
+  queryStore.createTab(context.connectionId, context.database, t("objectDependencies.viewSql"), "query", context.schema, sql, context.catalog, { forceNew: true });
+}
 const productionContext = computed(() => productionContextForDatabase(resolvedConnectionConfig.value, props.database));
 // The collection grid and Mongo query-result grids share the document-grid value
 // encoding (BSON null sentinel + JSON-prefixed containers), so every display,
@@ -4531,6 +4548,7 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
   const tableMeta = props.tableMeta;
   const connectionId = props.connectionId;
   if (!tableMeta || !connectionId) return false;
+  if (connectionStore.getConfig(connectionId)?.db_type === "jdbc" && resolvedDatabaseType.value === "oracle" && tableMeta.columns.some((column) => /^(?:CLOB|BLOB)$/i.test(column.data_type.trim()))) return false;
 
   const planResult = buildDataGridSavedRowRefreshPlan({
     context: props.context,
@@ -4584,7 +4602,7 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
     ...largeValuePreviewOptions,
     whereInput: identityConditions.join(" OR "),
     limit: planResult.plan.sourceIndexes.length + 1,
-    includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+    includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
   });
   const refreshed = await executeDataGridSavedRowRefreshQuery(api, {
     connectionId,
@@ -7765,12 +7783,12 @@ async function applyOrderBySearch(_value?: string, structuredOrderByOverride?: s
       columns: tableMeta.columns.map((column) => column.name),
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
       primaryKeys: tableMeta.primaryKeys,
-      ...tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value),
+      ...tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value, !!props.connectionId && connectionStore.getConfig(props.connectionId)?.db_type === "jdbc"),
       orderBy: orderByClause,
       injectDefaultTimeSeriesWhere: true,
       limit: pageSize.value,
       whereInput: currentWhereInput(),
-      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
     });
     markConditionInputsApplied();
     await props.onExecuteSql(sql);
@@ -7808,12 +7826,12 @@ async function applyWhereFilter() {
       columns: tableMeta.columns.map((column) => column.name),
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
       primaryKeys: tableMeta.primaryKeys,
-      ...tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value),
+      ...tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value, !!props.connectionId && connectionStore.getConfig(props.connectionId)?.db_type === "jdbc"),
       orderBy: effectiveOrderBy(),
       limit: pageSize.value,
       injectDefaultTimeSeriesWhere: true,
       whereInput,
-      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
     });
     markConditionInputsApplied();
     await props.onExecuteSql(sql);
@@ -12692,6 +12710,19 @@ function onRowContext(rowId: number, rowIndex: number) {
 const sqlOneLiner = computed(() => userFacingSql.value.replace(/\s+/g, " ").trim());
 const copySqlModifierLabel = shortcutKeyLabel("Mod");
 
+function viewStatusSql() {
+  if (props.context !== "table-data") {
+    void copyUserFacingSql();
+    return;
+  }
+  emit("viewSql", {
+    sql: userFacingSql.value,
+    actualSql: actualExecutionSql.value,
+    isCurrentPage: !!props.result.sqlPage,
+    probeLimit: props.result.sqlPage?.probe ? props.result.sqlPage.executedLimit : undefined,
+  });
+}
+
 // Plain click copies the SQL exactly as shown; Cmd/Ctrl + click copies the variant
 // whose table references carry the full database name, regardless of the
 // `generateSqlIncludeDatabaseName` setting.
@@ -13156,6 +13187,7 @@ const tableInfoTabs = computed(() => {
       count: partitioning.value?.partitions.length,
     });
   }
+  if (tableDependencyTarget.value) tabs.push({ id: "relations", label: t("objectRelations.title"), icon: Network });
   return tabs;
 });
 const tableInfoTabListStyle = computed(() => ({
@@ -13182,7 +13214,7 @@ async function selectTableInfoTab(tab: TableInfoTab) {
   // The drawer is often opened after the table was already selected, so the
   // partition status may never have been probed; do it here (once) before the
   // tab list is consulted, or the Partitions tab would be missing entirely.
-  if (!partitionStatusResolved.value) await probeTablePartitionStatus();
+  if (tab !== "relations" && !partitionStatusResolved.value) await probeTablePartitionStatus();
   const tabSupported = tableInfoTabs.value.some((item) => item.id === tab);
   const nextTab = tabSupported ? tab : tableInfoTabs.value[0]?.id;
   if (!nextTab) return;
@@ -13589,7 +13621,7 @@ function copyDdl() {
 
 function openTableStructureEditor(initialTab: TableInfoTab = "columns"): boolean {
   if (!props.connectionId || !props.database || !props.tableMeta?.tableName || !canOpenTableStructureEditor.value) return false;
-  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, initialTab, undefined, props.tableMeta.catalog, (props.tableMeta.tableType || "").toUpperCase() === "VIEW" ? "view" : "table");
+  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, initialTab === "relations" ? "columns" : initialTab, undefined, props.tableMeta.catalog, (props.tableMeta.tableType || "").toUpperCase() === "VIEW" ? "view" : "table");
   return true;
 }
 
@@ -16464,7 +16496,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               </button>
             </div>
 
-            <div class="px-2 py-1.5 border-b shrink-0 bg-background">
+            <div v-if="activeTableInfoTab !== 'relations'" class="px-2 py-1.5 border-b shrink-0 bg-background">
               <div class="flex min-w-0 items-center gap-1">
                 <div class="relative min-w-0 flex-1">
                   <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -16490,8 +16522,9 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               </div>
             </div>
 
+            <ObjectDependenciesPanel v-if="activeTableInfoTab === 'relations'" :target="tableDependencyTarget" v-model:section="tableRelationsSection" :include-source="false" @view-sql="viewRelationSql" @open-object="(context, target) => emit('openDependencyObject', context, target)" />
             <DataGridTableInfoPanels
-              v-if="activeTableInfoTab !== 'ddl'"
+              v-else-if="activeTableInfoTab !== 'ddl'"
               :active-tab="activeTableInfoTab"
               :search-query="searchQuery"
               :table-name="props.tableMeta?.tableName ?? ''"
@@ -16764,14 +16797,14 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       <div v-if="selectedColumnInfo" data-grid-column-info class="min-w-0 max-w-full truncate select-text max-sm:absolute max-sm:left-3 max-sm:right-3 max-sm:top-1" :title="selectedColumnInfo">
         {{ selectedColumnInfo }}
       </div>
-      <div v-else-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="min-w-0 max-w-full justify-self-center">
+      <div v-else-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="flex min-w-0 max-w-full items-center gap-1 justify-self-center">
         <CustomContextMenu :items="statusSqlContextMenuItems" v-slot="{ onContextMenu }">
           <Tooltip>
             <TooltipTrigger as-child>
-              <span class="block min-w-0 max-w-full truncate opacity-60 cursor-pointer hover:opacity-100" data-result-sql @click="copyUserFacingSql" @contextmenu="onContextMenu">
+              <button type="button" class="block min-w-0 max-w-full truncate text-left opacity-60 cursor-pointer hover:opacity-100" data-result-sql :aria-label="t(context === 'table-data' ? 'grid.viewQuerySql' : 'grid.copyQuerySql')" @click="viewStatusSql" @contextmenu="onContextMenu">
                 <span v-if="result.sqlPage">{{ t("grid.currentPageSql") }}: </span>
                 {{ sqlOneLiner }}
-              </span>
+              </button>
             </TooltipTrigger>
             <TooltipContent side="top" class="max-w-md">
               <div v-if="result.sqlPage" class="mb-1 font-medium">{{ t("grid.currentPageSql") }}</div>
@@ -16785,6 +16818,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             </TooltipContent>
           </Tooltip>
         </CustomContextMenu>
+        <Button v-if="context === 'table-data'" variant="ghost" size="icon" class="h-6 w-6 shrink-0" :aria-label="t('grid.copyQuerySql')" :title="t('grid.copyQuerySql')" @click="copyUserFacingSql"><Copy class="h-3 w-3" /></Button>
       </div>
       <span v-else class="min-w-0" />
 

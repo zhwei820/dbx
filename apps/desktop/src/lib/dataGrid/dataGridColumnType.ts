@@ -348,6 +348,12 @@ export function isInt64ColumnType(dataType: string | undefined): boolean {
   return !array && INT64_COLUMN_TYPE_BASES.has(base);
 }
 
+export function isUuidColumnType(dataType: string | undefined): boolean {
+  if (!dataType?.trim()) return false;
+  const { base, array } = dataGridColumnTypeBase(dataType);
+  return !array && (base === "uuid" || base === "uniqueidentifier");
+}
+
 /**
  * Collapse driver-specific SQL type names into the small semantic palette used
  * by grid headers and values. Unknown types deliberately stay neutral.
