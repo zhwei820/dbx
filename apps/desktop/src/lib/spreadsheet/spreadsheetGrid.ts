@@ -114,11 +114,32 @@ export function spreadsheetSourceToRows(source: readonly Record<string, unknown>
   );
 }
 
-export function defaultCsvSavePath(filePath: string): string {
-  if (/\.csv$/i.test(filePath)) return filePath;
+export type SpreadsheetSaveFormat = "csv" | "xlsx";
+
+// Edited cells and CSV values are text; plain numbers of up to eight digits become numeric cells in xlsx. Longer ones stay
+// text so IDs and phone numbers keep every digit, as do leading zeros ("007") and anything with spaces or a "+".
+const XLSX_NUMERIC_TEXT = /^-?(0|[1-9]\d*)(\.\d+)?$/;
+const XLSX_NUMERIC_MAX_DIGITS = 8;
+
+export function spreadsheetXlsxRows(rows: readonly (readonly (string | number | boolean)[])[]): (string | number | boolean)[][] {
+  return rows.map((row) =>
+    row.map((value) => {
+      if (typeof value !== "string" || !XLSX_NUMERIC_TEXT.test(value)) return value;
+      return value.replace(/[-.]/g, "").length > XLSX_NUMERIC_MAX_DIGITS ? value : Number(value);
+    }),
+  );
+}
+
+export function defaultSpreadsheetSavePath(filePath: string, format: SpreadsheetSaveFormat): string {
+  if (spreadsheetSaveFormat(filePath) === format) return filePath;
   const dot = filePath.lastIndexOf(".");
   const slash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
-  return `${dot > slash ? filePath.slice(0, dot) : filePath}.csv`;
+  return `${dot > slash ? filePath.slice(0, dot) : filePath}.${format}`;
+}
+
+export function spreadsheetSaveFormat(filePath: string): SpreadsheetSaveFormat | undefined {
+  const match = /\.(csv|xlsx)$/i.exec(filePath);
+  return match ? (match[1].toLowerCase() as SpreadsheetSaveFormat) : undefined;
 }
 
 // Tab-separated rows; fields that would break the row/column structure are quoted the way Excel pastes them.

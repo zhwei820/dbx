@@ -3745,6 +3745,8 @@ export default {
     reload: "Reload file",
     loadFailed: "Failed to open file: {message}",
     saveAsCsv: "Save as CSV",
+    saveAsXlsx: "Save as Excel",
+    saveWorkbookOverwriteWarning: "Only the current sheet's values are written. Other sheets, formulas and formatting in this workbook will be lost — continue?",
     save: "Save",
     saveAs: "Save as…",
     saveEncodingWarning: "The file is stored as {encoding}. Saving in place rewrites it as UTF-8 with BOM — continue?",

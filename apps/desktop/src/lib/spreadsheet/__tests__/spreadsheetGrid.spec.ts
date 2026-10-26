@@ -3,7 +3,7 @@ import {
   buildSpreadsheetGrid,
   columnClipboardText,
   columnLetter,
-  defaultCsvSavePath,
+  defaultSpreadsheetSavePath,
   deleteColumnsSplice,
   deleteSpreadsheetRows,
   distinctSpreadsheetValues,
@@ -20,6 +20,8 @@ import {
   spliceSpreadsheetColumns,
   spreadsheetColumnName,
   spreadsheetColumns,
+  spreadsheetSaveFormat,
+  spreadsheetXlsxRows,
   spreadsheetMatchFrom,
   spreadsheetPasteCells,
   spreadsheetSourceToRows,
@@ -120,12 +122,31 @@ describe("spreadsheetSourceToRows", () => {
   });
 });
 
-describe("defaultCsvSavePath", () => {
-  it("keeps csv paths and swaps other extensions for .csv", () => {
-    expect(defaultCsvSavePath("/data/a.CSV")).toBe("/data/a.CSV");
-    expect(defaultCsvSavePath("/data/report.v2.xlsx")).toBe("/data/report.v2.csv");
-    expect(defaultCsvSavePath("C:\\data\\b.tsv")).toBe("C:\\data\\b.csv");
-    expect(defaultCsvSavePath("/data.dir/noext")).toBe("/data.dir/noext.csv");
+describe("defaultSpreadsheetSavePath", () => {
+  it("keeps paths already in the target format and swaps other extensions", () => {
+    expect(defaultSpreadsheetSavePath("/data/a.CSV", "csv")).toBe("/data/a.CSV");
+    expect(defaultSpreadsheetSavePath("/data/report.v2.xlsx", "csv")).toBe("/data/report.v2.csv");
+    expect(defaultSpreadsheetSavePath("C:\\data\\b.tsv", "csv")).toBe("C:\\data\\b.csv");
+    expect(defaultSpreadsheetSavePath("/data.dir/noext", "csv")).toBe("/data.dir/noext.csv");
+    expect(defaultSpreadsheetSavePath("/data/a.XLSX", "xlsx")).toBe("/data/a.XLSX");
+    expect(defaultSpreadsheetSavePath("/data/legacy.xls", "xlsx")).toBe("/data/legacy.xlsx");
+    expect(defaultSpreadsheetSavePath("/data/macro.xlsm", "xlsx")).toBe("/data/macro.xlsx");
+  });
+});
+
+describe("spreadsheetSaveFormat", () => {
+  it("reads the format from the extension case-insensitively", () => {
+    expect(spreadsheetSaveFormat("/data/a.CSV")).toBe("csv");
+    expect(spreadsheetSaveFormat("/data/a.Xlsx")).toBe("xlsx");
+    expect(spreadsheetSaveFormat("/data/a.xls")).toBeUndefined();
+    expect(spreadsheetSaveFormat("/data/a")).toBeUndefined();
+  });
+});
+
+describe("spreadsheetXlsxRows", () => {
+  it("turns plain numbers of up to eight digits into numbers and keeps the rest as text", () => {
+    expect(spreadsheetXlsxRows([["42", "-3.5", "0", "0.25", "12345678", "-1234.5678", "123456789", "1234.56789"]])).toEqual([[42, -3.5, 0, 0.25, 12345678, -1234.5678, "123456789", "1234.56789"]]);
+    expect(spreadsheetXlsxRows([["007", " 1", "+1", "1e3", "1,000", "", "abc", 5, true]])).toEqual([["007", " 1", "+1", "1e3", "1,000", "", "abc", 5, true]]);
   });
 });
 

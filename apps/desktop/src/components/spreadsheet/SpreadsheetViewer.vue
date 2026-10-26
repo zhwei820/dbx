@@ -20,7 +20,7 @@ import {
   captureSpreadsheetColumns,
   columnClipboardText,
   columnLetter,
-  defaultCsvSavePath,
+  defaultSpreadsheetSavePath,
   deleteColumnsSplice,
   deleteSpreadsheetRows,
   distinctSpreadsheetValues,
@@ -42,11 +42,14 @@ import {
   spreadsheetCellMatches,
   spreadsheetColumnName,
   spreadsheetColumns,
+  type SpreadsheetSaveFormat,
+  spreadsheetSaveFormat,
   spreadsheetMatchFrom,
   spreadsheetPasteCells,
   SPREADSHEET_SEARCH_MATCH_LIMIT,
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
+  spreadsheetXlsxRows,
 } from "@/lib/spreadsheet/spreadsheetGrid";
 import { applySpreadsheetCellChanges, applySpreadsheetRowPatch, diffSpreadsheetRows, invertColumnSplice, type SpreadsheetCellChange, type SpreadsheetChange, SpreadsheetHistory, type SpreadsheetHistoryDirection } from "@/lib/spreadsheet/spreadsheetHistory";
 import { TABLE_IMPORT_ENCODING_OPTIONS } from "@/lib/table/tableImport";
@@ -130,24 +133,44 @@ async function switchSheet(sheet: string) {
   if (sheet !== activeSheet.value && (await confirmDiscardEdits())) void load(sheet);
 }
 
-// Only a file opened as CSV can be written back to its own path; the writer emits CSV and nothing else.
+// Only a file opened as CSV can be written back to its own path. Rewriting an opened workbook would keep only the
+// loaded sheet's values, so for those Mod+S always goes through the save dialog.
 const savesInPlace = computed(() => fileType.value === "csv");
+const preferredSaveFormat = computed<SpreadsheetSaveFormat>(() => (fileType.value === "excel" ? "xlsx" : "csv"));
 const canSave = computed(() => !loading.value && !saving.value && !truncated.value && !error.value);
 
-const saveButtonLabel = computed(() => t(savesInPlace.value ? "spreadsheet.save" : "spreadsheet.saveAsCsv"));
+const saveButtonLabel = computed(() => {
+  if (savesInPlace.value) return t("spreadsheet.save");
+  return t(preferredSaveFormat.value === "xlsx" ? "spreadsheet.saveAsXlsx" : "spreadsheet.saveAsCsv");
+});
 
 const saveButtonTitle = computed(() => {
   if (truncated.value) return t("spreadsheet.saveDisabledTruncated");
   const save = formatShortcutDisplay("Mod+S");
-  if (!savesInPlace.value) return `${t("spreadsheet.saveAsCsv")} (${save})`;
+  if (!savesInPlace.value) return `${saveButtonLabel.value} (${save})`;
   return `${t("spreadsheet.save")} (${save}) · ${t("spreadsheet.saveAs")} (${formatShortcutDisplay("Mod+Shift+S")})`;
 });
 
-async function pickCsvSavePath(): Promise<string | null> {
-  const defaultPath = defaultCsvSavePath(props.filePath);
-  if (!isTauriRuntime()) return defaultPath;
+const SAVE_FILTERS: Record<SpreadsheetSaveFormat, { name: string; extensions: string[] }> = {
+  xlsx: { name: "Excel", extensions: ["xlsx"] },
+  csv: { name: "CSV", extensions: ["csv"] },
+};
+
+async function pickSavePath(): Promise<{ path: string; format: SpreadsheetSaveFormat } | null> {
+  const preferred = preferredSaveFormat.value;
+  const defaultPath = defaultSpreadsheetSavePath(props.filePath, preferred);
+  if (!isTauriRuntime()) return { path: defaultPath, format: preferred };
   const { save } = await import("@tauri-apps/plugin-dialog");
-  return save({ defaultPath, filters: [{ name: "CSV", extensions: ["csv"] }] });
+  const other: SpreadsheetSaveFormat = preferred === "xlsx" ? "csv" : "xlsx";
+  const path = await save({ defaultPath, filters: [SAVE_FILTERS[preferred], SAVE_FILTERS[other]] });
+  // The dialog returns no filter choice, so the extension decides; a name without one keeps the preferred format.
+  return path ? { path, format: spreadsheetSaveFormat(path) ?? preferred } : null;
+}
+
+async function confirmWarning(message: string): Promise<boolean> {
+  if (!isTauriRuntime()) return window.confirm(message);
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(message, { kind: "warning" });
 }
 
 // The writer always emits UTF-8 + BOM, so overwriting a file stored in another encoding changes the file.
@@ -155,24 +178,22 @@ async function confirmEncodingRewrite(): Promise<boolean> {
   // An empty encoding means the file was not read as delimited text, so there is nothing to compare against.
   if (!sourceEncoding || sourceEncoding === "utf8") return true;
   const labelKey = TABLE_IMPORT_ENCODING_OPTIONS.find((option) => option.value === sourceEncoding)?.labelKey;
-  const message = t("spreadsheet.saveEncodingWarning", { encoding: labelKey ? t(labelKey) : sourceEncoding });
-  if (!isTauriRuntime()) return window.confirm(message);
-  const { ask } = await import("@tauri-apps/plugin-dialog");
-  return ask(message, { kind: "warning" });
+  return confirmWarning(t("spreadsheet.saveEncodingWarning", { encoding: labelKey ? t(labelKey) : sourceEncoding }));
 }
 
-async function writeCsvTo(outputPath: string) {
+async function writeFileTo(outputPath: string, format: SpreadsheetSaveFormat) {
   // Edits made while the file is being written are not part of it.
   const savedState = history.stateId;
   // getSource is the unsorted, unfiltered backing data, including in-grid edits.
   const source = ((await gridRef.value?.$el.getSource()) ?? grid.value.source) as Record<string, unknown>[];
   const width = grid.value.columns.length;
-  await api.exportQueryResultCsv(
-    outputPath,
-    Array.from({ length: width }, (_, index) => headers.value[index] ?? ""),
-    spreadsheetSourceToRows(source, width),
-    useSettingsStore().editorSettings.csvQuoteMode,
-  );
+  const columns = Array.from({ length: width }, (_, index) => headers.value[index] ?? "");
+  const rows = spreadsheetSourceToRows(source, width);
+  if (format === "xlsx") {
+    await api.exportQueryResultXlsx(outputPath, activeSheet.value, columns, [], undefined, spreadsheetXlsxRows(rows), false, false);
+  } else {
+    await api.exportQueryResultCsv(outputPath, columns, rows, useSettingsStore().editorSettings.csvQuoteMode);
+  }
   history.markSaved(savedState);
   syncHistory();
   toast(t("spreadsheet.saved", { path: outputPath }), 3000);
@@ -191,10 +212,11 @@ async function saveFile(saveAs: boolean) {
   saving.value = true;
   try {
     const writeInPlace = !saveAs && savesInPlace.value;
-    const outputPath = writeInPlace ? props.filePath : await pickCsvSavePath();
-    if (!outputPath) return;
+    const target = writeInPlace ? { path: props.filePath, format: "csv" as const } : await pickSavePath();
+    if (!target) return;
     if (writeInPlace && !(await confirmEncodingRewrite())) return;
-    await writeCsvTo(outputPath);
+    if (!writeInPlace && fileType.value === "excel" && target.path === props.filePath && !(await confirmWarning(t("spreadsheet.saveWorkbookOverwriteWarning")))) return;
+    await writeFileTo(target.path, target.format);
   } catch (e: any) {
     toast(t("spreadsheet.saveFailed", { message: e?.message || String(e) }), 5000);
   } finally {

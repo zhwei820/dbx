@@ -3675,6 +3675,8 @@ export default withEnglishFallback({
     reload: "重新加载文件",
     loadFailed: "打开文件失败：{message}",
     saveAsCsv: "保存为 CSV",
+    saveAsXlsx: "保存为 Excel",
+    saveWorkbookOverwriteWarning: "只会写入当前工作表的值，该工作簿中的其他工作表、公式和格式都会丢失，是否继续？",
     save: "保存",
     saveAs: "另存为",
     saveEncodingWarning: "原文件编码为 {encoding}，原地保存会把它写成 UTF-8 + BOM，是否继续？",
