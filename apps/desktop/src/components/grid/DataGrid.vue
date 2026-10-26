@@ -12905,9 +12905,9 @@ function onRowContext(rowId: number, rowIndex: number) {
 const sqlOneLiner = computed(() => userFacingSql.value.replace(/\s+/g, " ").trim());
 const copySqlModifierLabel = shortcutKeyLabel("Mod");
 
-function viewStatusSql() {
-  if (props.context !== "table-data") {
-    void copyUserFacingSql();
+function viewStatusSql(event?: MouseEvent) {
+  if (props.context !== "table-data" || event?.metaKey || event?.ctrlKey) {
+    void copyUserFacingSql(event);
     return;
   }
   emit("viewSql", {
