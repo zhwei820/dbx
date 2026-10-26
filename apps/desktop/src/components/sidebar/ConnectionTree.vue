@@ -36,6 +36,7 @@ import { isCancelSearchShortcut, isCopySidebarSelectionShortcut, isDisconnectSid
 import { sidebarNodeSupportsDdlView } from "@/lib/sidebar/sidebarTreeDdlShortcut";
 import { DEFAULT_DATABASE_TREE_LABEL, hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { objectSourceTargetForTreeNode } from "@/lib/sidebar/treeNodeClick";
+import { exactOracleTriggerNodeMetadata } from "@/lib/database/oracleTriggerIdentity";
 import { supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { connectionPasteTargetGroupId, copySelectedConnectionsToClipboards, selectedConnectionDisconnectTargets, selectedConnectionEditTarget } from "@/lib/sidebar/sidebarConnectionSelection";
@@ -89,10 +90,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { codeMirrorSqlDialect } from "@/lib/database/jdbcDialect";
 import { sqlFormatDialectForDbType } from "@/lib/sql/sqlFormatter";
-import { createSidebarActionTarget, findSidebarActionTarget, matchesSidebarActionTarget, type SidebarActionTarget } from "@/lib/sidebar/sidebarActionTarget";
+import { createSidebarActionTarget, findSidebarActionTarget, matchesSidebarActionTarget, type SidebarActionRequest, type SidebarActionTarget } from "@/lib/sidebar/sidebarActionTarget";
 import { collapseOtherExpandedDatabases, syncSidebarTreeNodeExpansion } from "@/lib/sidebar/sidebarTreeExpansion";
 import { openSidebarDangerDialog } from "@/lib/sidebar/sidebarDangerDialog";
 import { resetSidebarTreeDialogState } from "./sidebarTreeDialogState";
+import type { OracleTriggerSqlBinding } from "@/lib/database/oracleTriggerSql";
 import { SidebarDdlViewDialog, SidebarElasticsearchIndexMetadataDialog, SidebarObjectSourceDialog, SidebarProcedureExecutionDialog, SidebarVisibleDatabasesDialog, SidebarVisibleNacosNamespacesDialog, SidebarVisibleSchemasDialog } from "./sidebarAsyncDialogs";
 import { sortConnectionListForDisplay } from "@/lib/sidebar/connectionListSort";
 import { sidebarDisplayTableName } from "@/lib/sidebar/sidebarTableNameDisplay";
@@ -137,6 +139,7 @@ const sidebarContextMenuItems = ref<ContextMenuItem[]>([]);
 const { presentMenu, SidebarMenuPreferencesDialog, sidebarMenuPreferencesOpen, sidebarMenuPreferences } = useSidebarMenuPresentation();
 const emit = defineEmits<{
   "open-settings": [initialTab: string];
+  "open-connection-settings": [connectionId: string];
   "add-to-ai": [nodes: TreeNode | TreeNode[]];
   "open-dependency-object": [context: ObjectDependencyTarget, target: SqlObjectNavigationTarget];
 }>();
@@ -156,7 +159,7 @@ const sidebarDdlTarget = ref<TreeNode | null>(null);
 const sidebarDdlOpen = ref(false);
 const sidebarElasticsearchIndexMetadataTarget = ref<{ node: TreeNode; kind: ElasticsearchIndexMetadataKind } | null>(null);
 const sidebarElasticsearchIndexMetadataOpen = ref(false);
-const sidebarObjectSourceTarget = ref<{ node: TreeNode; initialEditing: boolean; initialSection?: ObjectDetailsSection } | null>(null);
+const sidebarObjectSourceTarget = ref<{ node: TreeNode; initialEditing: boolean; initialSection?: ObjectDetailsSection; createTrigger?: SidebarActionRequest<OracleTriggerSqlBinding> } | null>(null);
 const sidebarObjectSourceOpen = ref(false);
 const sidebarProcedureTarget = ref<TreeNode | null>(null);
 const sidebarProcedureOpen = ref(false);
@@ -520,6 +523,18 @@ const globalSearchContext = [
   () => store.activeConnectionId,
   () => [...store.connectedIds].sort().join("\0"),
   () => [...queryStore.openDatabaseKeys].sort().join("\0"),
+  () => {
+    if (!settingsStore.editorSettings.sidebarSearchOpenedDatabasesOnly) return "";
+    const connectionId = store.activeConnectionId;
+    if (!connectionId) return "";
+    const rootPath = findNodePathByIdentity(store.treeNodes, connectionId, { connectionId, database: "", nodeType: "connection" });
+    const root = rootPath?.[rootPath.length - 1];
+    if (!root) return "";
+    const scope = resolveSidebarSearchDatabaseScope(root, { enabled: true, isChildrenLoaded: store.isTreeNodeChildrenLoaded, openDatabaseKeys: queryStore.openDatabaseKeys });
+    // Tree-only opens do not change editor tab keys. Observe scope membership,
+    // not descendant metadata or expansion flags, to avoid restarting builds.
+    return JSON.stringify([...(scope ?? [])].sort());
+  },
   () => store.sidebarTableSearchIndexInvalidation.revision,
   () => selectedSearchScopes.value.join(","),
 ];
@@ -529,7 +544,11 @@ const { scopes: globalTableSearchScopes, isLoading: isGlobalIndexLoading } = use
   load: loadGlobalTableSearchIndexes,
   onError: (error) => toast(error instanceof Error ? error.message : String(error), 5000),
 });
-const { results: remoteSearchResults, isLoading: isRemoteSearchLoading } = useSidebarRemoteSearch({
+const {
+  results: remoteSearchResults,
+  isLoading: isRemoteSearchLoading,
+  removeVerifiedTriggerNode: removeVerifiedRemoteTriggerNode,
+} = useSidebarRemoteSearch({
   query: searchQuery,
   enabled: computed(() => !regexMode.value && !settingsStore.editorSettings.sidebarGlobalSearchLocal && !searchableNodeTypes.value),
   context: [...globalSearchContext, () => store.sidebarObjectSearchRevision],
@@ -1510,6 +1529,7 @@ provide(sidebarTreeContextKey, {
   // collapse while a projection is about to start, and the deferred query
   // keeps the currently rendered projection alive while clearing settles.
   isSearchProjectionActive: () => isTreeSearchFiltering.value || !!deferredSearchQuery.value,
+  removeVerifiedTriggerNode: removeVerifiedRemoteTriggerNode,
   getTreeLoadSearchOptions: () => {
     if (!deferredSearchQuery.value) return undefined;
     return { searchFilter: "", allowGlobalSearchMismatch: true, expectedSidebarSearchQuery: "" };
@@ -2098,6 +2118,9 @@ function onSearchToggle(node: TreeNode) {
 }
 
 function onNodeToggled(node: TreeNode, expanded: boolean) {
+  // Explicit cached toggles may act on a search copy; synchronize only the
+  // expansion state, never replace the live subtree with projected children.
+  syncSidebarTreeNodeExpansion(store.treeNodes, node, expanded);
   if (isTreeSearchFiltering.value) return;
   sidebarLayoutMonitor.recordEvent({
     type: "expand-toggle",
@@ -2106,7 +2129,6 @@ function onNodeToggled(node: TreeNode, expanded: boolean) {
     nodeType: node.type,
     expanded,
   });
-  syncSidebarTreeNodeExpansion(store.treeNodes, node, expanded);
   if (expanded) collapseOtherExpandedDatabases(store.treeNodes, node);
 }
 
@@ -2249,7 +2271,7 @@ function openSidebarElasticsearchIndexMetadata(node: TreeNode, kind: Elasticsear
   sidebarElasticsearchIndexMetadataOpen.value = true;
 }
 
-function openSidebarObjectSource(node: TreeNode, initialEditing: boolean, initialSection?: ObjectDetailsSection) {
+function openSidebarObjectSource(node: TreeNode, initialEditing: boolean, initialSection?: ObjectDetailsSection, createTrigger?: SidebarActionRequest<OracleTriggerSqlBinding>) {
   if (!node.connectionId || !hasTreeNodeDatabaseContext(node) || !objectSourceTargetForTreeNode(node)) return;
   // TYPE/TYPE_BODY only have a source implementation on Xugu; PostgreSQL-family
   // connections list user-defined types without a CREATE TYPE getter this cycle.
@@ -2258,7 +2280,7 @@ function openSidebarObjectSource(node: TreeNode, initialEditing: boolean, initia
   beginSidebarAction();
   // issue #9035：弹窗立即挂载。此前先 await ensureConnected 再开弹窗，这段时间
   // 界面上没有任何反馈；现在连接与取源都在弹窗自身的加载态之内完成。
-  sidebarObjectSourceTarget.value = { node: target, initialEditing, initialSection };
+  sidebarObjectSourceTarget.value = { node: target, initialEditing, initialSection, createTrigger };
   sidebarObjectSourceOpen.value = true;
 }
 
@@ -2383,7 +2405,7 @@ async function executeSidebarProcedureSql(sql: string) {
 }
 
 async function refreshSidebarActionTarget() {
-  const target = sidebarObjectSourceTarget.value?.node || sidebarDdlTarget.value || sidebarInstallExtensionTarget.value;
+  const target = sidebarObjectSourceTarget.value?.createTrigger?.target || sidebarObjectSourceTarget.value?.node || sidebarDdlTarget.value || sidebarInstallExtensionTarget.value;
   if (!target) return;
   const currentTarget = findSidebarActionTarget(store.treeNodes, target);
   if (!currentTarget) return;
@@ -2404,7 +2426,7 @@ watch(sidebarElasticsearchIndexMetadataOpen, (open) => {
 
 watch(sidebarObjectSourceOpen, (open) => {
   if (!open) {
-    const nodeId = sidebarObjectSourceTarget.value?.node.id;
+    const nodeId = sidebarObjectSourceTarget.value?.createTrigger?.target.id || sidebarObjectSourceTarget.value?.node.id;
     sidebarObjectSourceTarget.value = null;
     restoreSidebarTreeFocusAfterDialog(nodeId);
   }
@@ -2795,6 +2817,7 @@ defineExpose({
       @open-object-source="openSidebarObjectSource"
       @open-procedure="openSidebarProcedure"
       @open-settings="openSidebarSettings"
+      @open-connection-settings="(connectionId) => emit('open-connection-settings', connectionId)"
       @open-data="openSidebarData"
       @open-visible-databases="openSidebarVisibleDatabases"
       @open-visible-schemas="openSidebarVisibleSchemas"
@@ -3047,6 +3070,9 @@ defineExpose({
       :format-dialect="sidebarObjectSourceFormatDialect"
       :initial-editing="sidebarObjectSourceTarget.initialEditing"
       :initial-section="sidebarObjectSourceTarget.initialSection"
+      :create-trigger="sidebarObjectSourceTarget.createTrigger?.payload"
+      :execution-schema="sidebarObjectSourceTarget.node.schema || sidebarObjectSourceTarget.node.database"
+      :trigger-identity-mode="exactOracleTriggerNodeMetadata(sidebarObjectSourceTarget.node) ? 'exact' : undefined"
       @open-object="(context: ObjectDependencyTarget, target: SqlObjectNavigationTarget) => emit('open-dependency-object', context, target)"
       @saved="refreshSidebarActionTarget"
     />

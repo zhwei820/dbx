@@ -2,13 +2,61 @@ import type { StarRocksAlterOptions } from "@/lib/table/starrocksAlterOptions";
 import type { CreateTableDialectOptions } from "@/lib/table/starrocksPhysicalOptions";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
+import { SnapshotCompletionError, unwrapSnapshotCompletion } from "@/lib/export/snapshotCompletion";
 import type { MongoDumpFormat, MongoDumpSourceInput, MongoDumpCatalog, MongoRestoreSourcePreview, MongoDatabaseDumpRequest, MongoDatabaseRestoreRequest, MongoDatabaseDumpProgress } from "./mongodbDumpTypes";
 import type { MongoRestoreUpload, MongoSourceReadOptions } from "./mongodbDumpTypes";
 import type { DamengDumpKind, DamengDumpRequest, DamengDumpProgress } from "./damengDumpTypes";
 import type { UserSkillRootSettings, UserSkillsListResult, UserSkillsReadResult } from "@/types/userSkills";
 import type { DatabaseBackupCommand, DatabaseBackupBackgroundStatus } from "@/lib/backup/backgroundDatabaseBackup";
+import type { NativeJobContext, NativeJobDetails, NativeJobList, NativeJobListRequest, NativeJobRequest, NativeJobOperationStatus, NativeJobPreparedPlan, NativeJobRef, NativeJobReferenceCatalog, NativeJobReferenceListRequest } from "@/lib/database/nativeJobs";
 import { functionDiffsToWire, functionInfoFromWire, schemaDiffPreparationFromWire, schemaDiffPreparationToWire, type FunctionInfoWire, type SchemaDiffPreparationWire } from "./functionInfoTransport";
 import type { OracleRoutineSnapshot, OracleRoutineOperation, OracleRoutineOperationObservation, OracleRoutineSaveInput, OracleRoutinePlanInput, OracleRoutinePlan, OracleRoutineReadOptions, OracleRoutineIdentity } from "@/types/schemaDiff";
+import type { PlDebugBootstrap, PlDebugSessionRef, PlDebugStartIntent, PlDebugOperationRequest, PlDebugReadRequest, PlDebugReceipt, PlDebugSnapshot } from "@/lib/debug/plDebugProtocol";
+import type { PlDebugInspectRequest, PlDebugInspectResult, PlDebugCompileIntent, PlDebugCompileRef, PlDebugCompileReceipt } from "@/lib/debug/plDebugProtocol";
+
+export function plDebugBootstrap(): Promise<PlDebugBootstrap> {
+  return invoke("pl_debug_bootstrap");
+}
+
+export function plDebugInspect(request: PlDebugInspectRequest): Promise<PlDebugInspectResult> {
+  return invoke("pl_debug_inspect", { request });
+}
+
+export function plDebugCompile(request: PlDebugCompileIntent): Promise<PlDebugCompileReceipt> {
+  return invokeBackend("pl_debug_compile", { request });
+}
+
+export function plDebugCompileStatus(reference: PlDebugCompileRef): Promise<PlDebugCompileReceipt> {
+  return invoke("pl_debug_compile_status", { reference });
+}
+
+export function plDebugList(serverEpoch: string, connectionId: string): Promise<PlDebugSnapshot[]> {
+  return invoke("pl_debug_list", { serverEpoch, connectionId });
+}
+
+export function plDebugStart(request: PlDebugStartIntent): Promise<PlDebugReceipt> {
+  return invokeBackend("pl_debug_start", { request });
+}
+
+export function plDebugStatus(reference: PlDebugSessionRef, refresh = false): Promise<PlDebugSnapshot> {
+  return invoke("pl_debug_status", { reference, refresh });
+}
+
+export function plDebugHeartbeat(reference: PlDebugSessionRef): Promise<PlDebugSnapshot> {
+  return invoke("pl_debug_heartbeat", { reference });
+}
+
+export function plDebugOperation(reference: PlDebugSessionRef, operationId: string): Promise<PlDebugReceipt> {
+  return invoke("pl_debug_operation", { reference, operationId });
+}
+
+export function plDebugOperate(request: PlDebugOperationRequest): Promise<PlDebugReceipt> {
+  return invokeBackend("pl_debug_operate", { request });
+}
+
+export function plDebugRead(request: PlDebugReadRequest): Promise<Record<string, unknown> | unknown[]> {
+  return invoke("pl_debug_read", { request });
+}
 
 export function databaseBackupCommand<T = unknown>(command: DatabaseBackupCommand): Promise<T> {
   return invoke("database_backup_command", { command });
@@ -183,6 +231,7 @@ import type { BuildTableSelectSqlOptions } from "@/lib/table/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/database/databaseSearch";
 import type { DatabaseStructureSearchSql, DatabaseStructureSearchSqlOptions } from "@/lib/database/databaseStructureSearch";
 import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceInput, FingerprintOracleRoutineObjectSourceInput, RewriteOracleRoutineReferencesInput, ValidateOracleExecutableObjectSourceInput } from "@/lib/table/objectSourceEditor";
+import type { OracleTriggerSqlInput, PreparedOracleTriggerSql } from "@/lib/database/oracleTriggerSql";
 import type { OracleTableReferenceRewriteInput, OracleViewRenameSource, OracleViewRenameSourceInput, OracleViewRenameSourceReview } from "@/types/database";
 import type { BuildViewDdlInput } from "@/lib/table/viewDdl";
 import type { BuildRenameObjectSqlOptions } from "@/lib/table/objectRenameSql";
@@ -1881,8 +1930,9 @@ export async function listObjects(
   catalog?: string,
   tableNameFilter?: import("@/types/database").TableNameFilter,
   executionId?: string,
-  exactIdentity?: boolean,
+  options?: boolean | import("@/types/database").MetadataReadOptions,
 ): Promise<ObjectInfo[]> {
+  const readOptions = typeof options === "object" ? options : undefined;
   return invoke("list_objects", {
     connectionId,
     database,
@@ -1891,10 +1941,11 @@ export async function listObjects(
     filter,
     limit,
     offset,
-    catalog,
+    catalog: readOptions?.catalog ?? catalog,
     tableNameFilter,
     executionId,
-    ...(exactIdentity ? { exactIdentity: true } : {}),
+    ...(readOptions?.identityMode ? { identityMode: readOptions.identityMode } : {}),
+    ...(options === true ? { exactIdentity: true } : {}),
   });
 }
 
@@ -1910,7 +1961,7 @@ export async function completionAssistantSearch(request: CompletionAssistantRequ
   return invoke("completion_assistant_search", { request });
 }
 
-export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind, signature?: string, relationName?: string): Promise<ObjectSource> {
+export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind, signature?: string, relationName?: string, options?: import("@/types/database").MetadataReadOptions): Promise<ObjectSource> {
   return invoke("get_object_source", {
     connectionId,
     database,
@@ -1919,6 +1970,8 @@ export async function getObjectSource(connectionId: string, database: string, sc
     objectType,
     signature,
     relationName,
+    ...(options?.identityMode ? { identityMode: options.identityMode } : {}),
+    ...(options?.catalog !== undefined ? { catalog: options.catalog } : {}),
   });
 }
 
@@ -1937,6 +1990,32 @@ export async function listSchemaInfos(connectionId: string, database: string): P
 export async function getCustomTypeDetails(connectionId: string, database: string, schema: string, name: string): Promise<CustomTypeDetails> {
   return invoke("get_custom_type_details", { connectionId, database, schema, name });
 }
+
+export function nativeJobOpenContext(connectionId: string, database: string): Promise<NativeJobContext> {
+  return invokeBackend("native_job_open_context", { connectionId, database });
+}
+export function nativeJobList(request: NativeJobListRequest): Promise<NativeJobList> {
+  return invokeBackend("native_job_list", { request });
+}
+export function nativeJobReferences(request: NativeJobReferenceListRequest): Promise<NativeJobReferenceCatalog> {
+  return invokeBackend("native_job_references", { request });
+}
+export function nativeJobRead(target: NativeJobRef): Promise<NativeJobDetails> {
+  return invokeBackend("native_job_read", { target });
+}
+export function nativeJobPrepare(mutation: NativeJobRequest): Promise<NativeJobPreparedPlan> {
+  return invokeBackend("native_job_prepare", { mutation });
+}
+export function nativeJobApply(planId: string): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_apply", { planId });
+}
+export function nativeJobStatus(operationId: string, observe?: boolean): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_status", { operationId, ...(observe ? { observe: true } : {}) });
+}
+export function nativeJobCancel(operationId: string): Promise<NativeJobOperationStatus> {
+  return invokeBackend("native_job_cancel", { operationId });
+}
+
 export async function getOracleTypeManagementSnapshot(connectionId: string, database: string, owner: string, name: string, knownObjects: OracleTypeManagementObjectKey[] = []): Promise<OracleTypeManagementSnapshot> {
   return invoke("get_oracle_type_management_snapshot", { connectionId, database, owner, name, knownObjects });
 }
@@ -2193,7 +2272,11 @@ export async function cancelConditionalUpdate(executionId: string, options?: { c
   return invoke("cancel_conditional_update", { executionId, ...options });
 }
 
-export async function readLargeValueChunk(request: import("./http").LargeValueRequest): Promise<import("./http").LargeValueChunk> {
+export async function readLargeValueChunk(request: import("./http").LargeValueRequest, reportOutcome = false): Promise<import("./http").LargeValueChunk> {
+  if (reportOutcome) {
+    const { unwrapSnapshotCompletion } = await import("@/lib/export/snapshotCompletion");
+    return unwrapSnapshotCompletion(await invoke("read_large_value_chunk", { request, reportOutcome: true }));
+  }
   return invoke("read_large_value_chunk", { request });
 }
 
@@ -2208,8 +2291,13 @@ export async function downloadLargeValue(request: import("./http").LargeValueReq
   signal?.throwIfAborted();
 }
 
-export async function exportSnapshotResult(request: import("./http").SnapshotExportRequest, filePath: string, signal?: AbortSignal): Promise<void> {
+export async function exportSnapshotResult(request: import("./http").SnapshotExportRequest, filePath: string, signal?: AbortSignal, reportOutcome = false): Promise<void> {
   signal?.throwIfAborted();
+  if (reportOutcome) {
+    const { unwrapSnapshotCompletion } = await import("@/lib/export/snapshotCompletion");
+    unwrapSnapshotCompletion(await invoke("export_snapshot_result", { request, filePath, reportOutcome: true }));
+    return;
+  }
   await invoke("export_snapshot_result", { request, filePath });
   signal?.throwIfAborted();
 }
@@ -2225,12 +2313,13 @@ export async function closeQuerySession(connectionId: string, database: string, 
   });
 }
 
-export async function closeClientConnectionSession(connectionId: string, database: string, clientSessionId: string, catalog?: string): Promise<boolean> {
+export async function closeClientConnectionSession(connectionId: string, database: string, clientSessionId: string, catalog?: string, reportCompletion = false): Promise<boolean> {
   return invoke("close_client_connection_session", {
     connectionId,
     database,
     clientSessionId,
     catalog,
+    ...(reportCompletion ? { reportCompletion: true } : {}),
   });
 }
 
@@ -2512,6 +2601,10 @@ export async function validateOracleExecutableObjectSource(input: ValidateOracle
   return invoke("validate_oracle_executable_object_source", { input });
 }
 
+export async function prepareOracleTriggerSql(input: OracleTriggerSqlInput): Promise<PreparedOracleTriggerSql> {
+  return invoke("prepare_oracle_trigger_sql", { input });
+}
+
 export async function fingerprintOracleRoutineObjectSource(input: FingerprintOracleRoutineObjectSourceInput): Promise<string> {
   return invoke("fingerprint_oracle_routine_object_source", { input });
 }
@@ -2753,14 +2846,16 @@ export async function listForeignKeysForDatabase(connectionId: string, database:
   return invoke("list_foreign_keys_for_database", { connectionId, database, schema, catalog, executionId });
 }
 
-export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string, exactIdentity?: boolean): Promise<TriggerInfo[]> {
+export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string, options?: boolean | import("@/types/database").MetadataReadOptions): Promise<TriggerInfo[]> {
+  const readOptions = typeof options === "object" ? options : undefined;
   return invoke("list_triggers", {
     connectionId,
     database,
     schema,
     table,
-    catalog,
-    ...(exactIdentity ? { exactIdentity: true } : {}),
+    catalog: readOptions?.catalog ?? catalog,
+    ...(readOptions?.identityMode ? { identityMode: readOptions.identityMode } : {}),
+    ...(options === true ? { exactIdentity: true } : {}),
   });
 }
 
@@ -2828,7 +2923,7 @@ export async function listSubpartitions(connectionId: string, database: string, 
   });
 }
 
-export async function getTableDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string, portable = false, exactIdentity?: boolean): Promise<string> {
+export async function getTableDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string, portable = false, exactIdentity?: boolean, separateIndexes?: boolean, explicitOwner?: string): Promise<string> {
   return invoke("get_table_ddl", {
     connectionId,
     database,
@@ -2838,10 +2933,12 @@ export async function getTableDdl(connectionId: string, database: string, schema
     catalog,
     portable,
     ...(exactIdentity ? { exactIdentity: true } : {}),
+    ...(separateIndexes ? { separateIndexes: true } : {}),
+    ...(explicitOwner !== undefined ? { explicitOwner } : {}),
   });
 }
 
-export async function getTableDisplayDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string): Promise<string> {
+export async function getTableDisplayDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string, separateIndexes?: boolean, explicitOwner?: string): Promise<string> {
   return invoke("get_table_ddl", {
     connectionId,
     database,
@@ -2850,6 +2947,8 @@ export async function getTableDisplayDdl(connectionId: string, database: string,
     objectType,
     catalog,
     includePostgresAccess: true,
+    ...(separateIndexes ? { separateIndexes: true } : {}),
+    ...(explicitOwner !== undefined ? { explicitOwner } : {}),
     portable: false,
   });
 }
@@ -3387,8 +3486,8 @@ export async function previewAgentOfflineExport(): Promise<AgentOfflineExportPre
   return invoke("preview_agent_offline_export");
 }
 
-export async function exportAgentsOffline(path: string, driverKeys: string[]): Promise<AgentOfflineExportResult> {
-  return invoke("export_agents_offline", { path, driverKeys });
+export async function exportAgentsOffline(path: string, driverKeys: string[], includeJres = true): Promise<AgentOfflineExportResult> {
+  return invoke("export_agents_offline", { path, driverKeys, includeJres });
 }
 
 export async function importAgentDriver(dbType: string, path: string | File): Promise<void> {
@@ -5847,6 +5946,7 @@ export type SqlFileStatus = "started" | "running" | "statementDone" | "statement
 export type SqlFileEncoding = "auto" | "utf8" | "gbk" | "utf16Le" | "utf16Be";
 
 export interface SqlFileRequest {
+  resolveIncludes?: boolean;
   encoding?: SqlFileEncoding;
   executionId: string;
   connectionId: string;
@@ -6155,6 +6255,7 @@ export interface TableImportColumnMapping {
   sourceColumn: string;
   targetColumn: string;
   targetDataType?: string | null;
+  generator?: string | null;
 }
 
 export interface TableImportParseOptions {
@@ -6480,22 +6581,32 @@ export async function releaseMongodbImportSource(_sourceRef: string): Promise<bo
   return false;
 }
 
-export async function exportMongodbQuery(request: MongoExportRequest, onProgress: (progress: MongoExportProgress) => void): Promise<MongoExportSummary> {
-  const unlisten: UnlistenFn = await listen<MongoExportProgress>("mongo-export-progress", (event) => {
-    if (event.payload.exportId === request.exportId) {
-      onProgress(event.payload);
-      if (event.payload.status === "done" || event.payload.status === "error" || event.payload.status === "cancelled") {
-        unlisten();
-      }
-    }
-  });
+export async function exportMongodbQuery(request: MongoExportRequest, onProgress: (progress: MongoExportProgress) => void, reportOutcome = false): Promise<MongoExportSummary> {
+  let unlisten: UnlistenFn;
   try {
+    unlisten = await listen<MongoExportProgress>("mongo-export-progress", (event) => {
+      if (event.payload.exportId === request.exportId) {
+        onProgress(event.payload);
+        if (event.payload.status === "done" || event.payload.status === "error" || event.payload.status === "cancelled") {
+          unlisten();
+        }
+      }
+    });
+  } catch (error) {
+    if (reportOutcome) throw new SnapshotCompletionError("failed", String(error));
+    throw error;
+  }
+  try {
+    if (reportOutcome) {
+      return unwrapSnapshotCompletion<MongoExportSummary>(await invoke("export_mongodb_query", { request, reportOutcome: true }));
+    }
     const summary = await invoke<MongoExportSummary>("export_mongodb_query", { request });
-    unlisten();
     return summary;
   } catch (e) {
-    unlisten();
+    if (reportOutcome) throw e;
     throw e instanceof BackendErrorException ? e : new BackendErrorException(e);
+  } finally {
+    unlisten();
   }
 }
 
@@ -6541,7 +6652,7 @@ export interface ExportProgress {
   totalObjects: number;
   rowsExported: number;
   totalRows: number | null;
-  status: "Running" | "Done" | "Error" | "Cancelled";
+  status: "Running" | "Done" | "Error" | "Cancelled" | "Unknown";
   error: string | null;
   /** True while listing schema / prefetching metadata before objects are written. */
   preparing?: boolean;
@@ -6552,7 +6663,7 @@ export interface ExportProgress {
 }
 
 // --- Table Export ---
-export type TableExportStatus = "Running" | "Writing" | "Done" | "Error" | "Cancelled";
+export type TableExportStatus = "Running" | "Writing" | "Done" | "Error" | "Cancelled" | "Unknown";
 
 export interface TableExportRequest {
   exportId: string;
@@ -6668,8 +6779,9 @@ export interface QueryResultExportRequest {
   primaryKeys?: string[];
 }
 
-export async function startTableExport(request: TableExportRequest, onProgress: (progress: TableExportProgress) => void): Promise<TableExportProgress> {
+export async function startTableExport(request: TableExportRequest, onProgress: (progress: TableExportProgress) => void, reportCompletion = false): Promise<TableExportProgress> {
   let unlisten: UnlistenFn | undefined;
+  let invoked = false;
   let settled = false;
   let resolveTerminal: (progress: TableExportProgress) => void = () => {};
   let rejectTerminal: (error: unknown) => void = () => {};
@@ -6690,7 +6802,9 @@ export async function startTableExport(request: TableExportRequest, onProgress: 
     unlisten = await listen<TableExportProgress>("table-export-progress", (event) => {
       if (event.payload.exportId !== request.exportId) return;
       onProgress(event.payload);
-      if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled") {
+      if (event.payload.status === "Unknown") {
+        finish(() => rejectTerminal(new SnapshotCompletionError("unknown", event.payload.errorMessage || "Export cleanup completion was not confirmed")));
+      } else if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled") {
         if (event.payload.status === "Error") {
           finish(() => rejectTerminal(new BackendErrorException(event.payload.errorMessage || "Export failed")));
         } else {
@@ -6698,12 +6812,16 @@ export async function startTableExport(request: TableExportRequest, onProgress: 
         }
       }
     });
+    invoked = true;
     await invoke("start_table_export", { request });
     return await terminalProgress;
   } catch (error) {
     if (!settled) {
       settled = true;
       unlisten?.();
+    }
+    if (reportCompletion && !invoked) {
+      throw new SnapshotCompletionError("failed", error instanceof Error ? error.message : String(error));
     }
     throw error instanceof BackendErrorException ? error : new BackendErrorException(error);
   }
@@ -6713,8 +6831,9 @@ export async function cancelTableExport(exportId: string): Promise<void> {
   return invoke("cancel_table_export", { exportId });
 }
 
-export async function startQueryResultExport(request: QueryResultExportRequest, onProgress: (progress: TableExportProgress) => void): Promise<TableExportProgress> {
+export async function startQueryResultExport(request: QueryResultExportRequest, onProgress: (progress: TableExportProgress) => void, reportCompletion = false): Promise<TableExportProgress> {
   let unlisten: UnlistenFn | undefined;
+  let invoked = false;
   let settled = false;
   let resolveTerminal: (progress: TableExportProgress) => void = () => {};
   let rejectTerminal: (error: unknown) => void = () => {};
@@ -6735,7 +6854,9 @@ export async function startQueryResultExport(request: QueryResultExportRequest, 
     unlisten = await listen<TableExportProgress>("query-result-export-progress", (event) => {
       if (event.payload.exportId !== request.exportId) return;
       onProgress(event.payload);
-      if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled") {
+      if (event.payload.status === "Unknown") {
+        finish(() => rejectTerminal(new SnapshotCompletionError("unknown", event.payload.errorMessage || "Export cleanup completion was not confirmed")));
+      } else if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled") {
         if (event.payload.status === "Error") {
           finish(() => rejectTerminal(new BackendErrorException(event.payload.errorMessage || "Export failed")));
         } else {
@@ -6743,12 +6864,16 @@ export async function startQueryResultExport(request: QueryResultExportRequest, 
         }
       }
     });
+    invoked = true;
     await invoke("start_query_result_export", { request });
     return await terminalProgress;
   } catch (error) {
     if (!settled) {
       settled = true;
       unlisten?.();
+    }
+    if (reportCompletion && !invoked) {
+      throw new SnapshotCompletionError("failed", error instanceof Error ? error.message : String(error));
     }
     throw error instanceof BackendErrorException ? error : new BackendErrorException(error);
   }
@@ -6769,20 +6894,24 @@ export async function beginDatabaseBackupSnapshot(connectionId: string, database
   return invoke("begin_database_backup_snapshot", { connectionId, database, exportId: exportId || null });
 }
 
-export async function exportDatabaseSql(request: DatabaseExportRequest, onProgress: (progress: ExportProgress) => void): Promise<void> {
-  const unlisten: UnlistenFn = await listen<ExportProgress>("database-export-progress", (event) => {
-    if (event.payload.exportId === request.exportId) {
-      onProgress(event.payload);
-      if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled") {
-        unlisten();
-      }
-    }
-  });
+export async function exportDatabaseSql(request: DatabaseExportRequest, onProgress: (progress: ExportProgress) => void, reportCompletion = false): Promise<void> {
+  let unlisten: UnlistenFn | undefined;
+  let invoked = false;
   try {
+    unlisten = await listen<ExportProgress>("database-export-progress", (event) => {
+      if (event.payload.exportId === request.exportId) {
+        onProgress(event.payload);
+        if (event.payload.status === "Done" || event.payload.status === "Error" || event.payload.status === "Cancelled" || event.payload.status === "Unknown") {
+          unlisten?.();
+        }
+      }
+    });
+    invoked = true;
     await invoke("export_database_sql", { request });
-  } catch (e) {
-    unlisten();
-    throw e;
+  } catch (error) {
+    unlisten?.();
+    if (reportCompletion && !invoked) throw new SnapshotCompletionError("failed", error instanceof Error ? error.message : String(error));
+    throw error;
   }
 }
 
