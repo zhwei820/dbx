@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch } from "vue";
 import { AlertTriangle, ArrowDownAZ, ArrowDownToLine, ArrowDownZA, ArrowLeftToLine, ArrowRightToLine, ArrowUpDown, ArrowUpToLine, Copy, CopyPlus, Filter, FilterX, ListPlus, Loader2, PencilLine, Redo2, RefreshCw, Save, Search, Trash2, Undo2 } from "@lucide/vue";
-import { type BeforeRangeSaveDataDetails, type BeforeSaveDataDetails, type ColumnFilterConfig, type ColumnRegular, type ExtraField, filterCoreFunctionsIndexedByType, filterNames, filterTypes, type LogicFunction, type PropertiesFunc } from "@revolist/revogrid";
+import { type BeforeRangeSaveDataDetails, type BeforeSaveDataDetails, type ColumnFilterConfig, type ColumnRegular, type ExtraField, filterCoreFunctionsIndexedByType, filterNames, filterTypes, getItemByIndex, type LogicFunction, type PropertiesFunc } from "@revolist/revogrid";
 import { VGrid } from "@revolist/vue3-datagrid";
 import { useI18n } from "vue-i18n";
 import TextContentSearchBar from "@/components/common/TextContentSearchBar.vue";
@@ -336,7 +336,24 @@ async function replayCells(cells: readonly SpreadsheetCellChange[], direction: S
   if (rows.length === 0 || columns.length === 0) return;
   const start = { x: Math.min(...columns), y: Math.min(...rows) };
   await element.setCellsFocus(start, { x: Math.max(...columns), y: Math.max(...rows) }, "rgCol", "rgRow");
-  await element.scrollToCoordinate(start);
+  await scrollCellIntoView(start);
+}
+
+// RevoGrid's scrollToCoordinate takes pixel offsets, not cell indexes, and scrolling a visible cell would jump the
+// viewport, so only the axes on which the cell lies outside the viewport are moved.
+async function scrollCellIntoView(cell: { x: number; y: number }) {
+  const providers = await gridElement()?.getProviders();
+  if (!providers) return;
+  const target: { x?: number; y?: number } = {};
+  for (const [axis, type] of [["x", "rgCol"], ["y", "rgRow"]] as const) {
+    const item = getItemByIndex(providers.dimension.stores[type].getCurrentState(), cell[axis]);
+    const viewport = providers.viewport.stores[type];
+    const scroll = viewport.lastCoordinate;
+    const clientSize = viewport.store.get("clientSize");
+    if (item.start < scroll) target[axis] = item.start;
+    else if (item.end > scroll + clientSize) target[axis] = item.end - clientSize;
+  }
+  if (target.x !== undefined || target.y !== undefined) await gridElement()?.scrollToCoordinate(target);
 }
 
 // Columns are never reordered or pinned, so a header's viewport index is also its physical index.
@@ -965,7 +982,7 @@ async function stepSearch(delta: 1 | -1, inclusive = false) {
   searchIndex.value = index;
   lastSearchCell = cell;
   await element.setCellsFocus(cell, cell, "rgCol", "rgRow");
-  await element.scrollToCoordinate(cell);
+  await scrollCellIntoView(cell);
   // Focusing the cell must not take Enter away from the find field, or the next Enter would edit it.
   searchBarRef.value?.focusInput(false);
 }
