@@ -98,12 +98,17 @@ async function toggleFormat() {
   }
 }
 
+// WebKit multi-click selections can end on a node outside the preview (e.g. the splitpanes splitter)
+// while only SQL is highlighted, so clip to the preview instead of requiring both ends inside it.
 function selectedPreviewText(): string {
   const selection = window.getSelection();
   const content = contentRef.value;
-  if (!selection || selection.isCollapsed || !content) return "";
-  if (!content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return "";
-  return selection.toString();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !content) return "";
+  if (!content.contains(selection.anchorNode) && !content.contains(selection.focusNode)) return "";
+  const range = selection.getRangeAt(0).cloneRange();
+  if (!content.contains(range.startContainer)) range.setStart(content, 0);
+  if (!content.contains(range.endContainer)) range.setEnd(content, content.childNodes.length);
+  return range.toString();
 }
 
 function selectAllPreviewSql() {
@@ -125,8 +130,8 @@ function onContentKeydown(event: KeyboardEvent) {
     return;
   }
   if (isPlainClipboardShortcut(event, "c")) {
-    const text = selectedPreviewText();
-    if (!text) return;
+    const text = selectedPreviewText() || displaySql.value;
+    if (!text.trim()) return;
     event.preventDefault();
     event.stopPropagation();
     void copyText(text);

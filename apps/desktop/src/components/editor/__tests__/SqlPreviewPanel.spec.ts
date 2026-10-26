@@ -289,6 +289,32 @@ describe("SqlPreviewPanel copy", () => {
     expect(mocks.copyToClipboard).toHaveBeenCalledWith(SQL);
   });
 
+  it("copies the in-preview part of a selection whose end landed outside it", async () => {
+    const mounted = await mountPanel();
+    const pre = previewText(mounted);
+    const splitter = document.createElement("div");
+    mounted.append(splitter);
+    const previewNode = pre.firstChild;
+    if (!previewNode) throw new Error("preview text node not found");
+
+    const range = document.createRange();
+    range.setStart(previewNode, 7);
+    range.setEnd(splitter, 0);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const bubbled = vi.fn();
+    mounted.addEventListener("keydown", bubbled);
+    const copied = dispatchCopy(pre, { metaKey: true });
+    await flushUi();
+    splitter.remove();
+
+    expect(copied.defaultPrevented).toBe(true);
+    expect(bubbled).not.toHaveBeenCalled();
+    expect(mocks.copyToClipboard).toHaveBeenCalledWith(SQL.slice(7));
+  });
+
   it("keeps the shortcut untouched for other modifiers", async () => {
     const mounted = await mountPanel();
     const pre = previewText(mounted);
