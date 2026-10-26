@@ -1927,6 +1927,10 @@ impl Storage {
             if encrypted > 0 && self.validate_existing_encrypted_data(resolved.codec).await.is_err() {
                 key_provider_available = false;
                 key_error_code = Some("SECRET_KEY_MISMATCH".to_string());
+            } else {
+                // Reading the keychain can prompt on macOS, so the storage reads
+                // that follow this startup probe reuse its key instead of reading again.
+                self.cache_secret_codec_if_unchanged(resolved.codec, key_files_before.clone());
             }
         } else if encrypted > 0
             && matches!(
