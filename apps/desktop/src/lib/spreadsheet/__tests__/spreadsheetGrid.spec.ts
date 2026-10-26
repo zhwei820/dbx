@@ -24,6 +24,7 @@ import {
   spreadsheetXlsxRows,
   spreadsheetMatchFrom,
   spreadsheetPasteCells,
+  spreadsheetPreviewWorksheet,
   spreadsheetSourceToRows,
   SPREADSHEET_MAX_COLUMN_SIZE,
   SPREADSHEET_MIN_COLUMN_SIZE,
@@ -119,6 +120,18 @@ describe("spreadsheetSourceToRows", () => {
       [1, "edited", ""],
       ["", "", ""],
     ]);
+  });
+});
+
+describe("spreadsheetPreviewWorksheet", () => {
+  it("pads a sheet read from the file to its widest row the way the grid saves it", () => {
+    expect(spreadsheetPreviewWorksheet(["id"], [[1, null, { a: 1 }], [true]])).toEqual({
+      columns: ["id", "", ""],
+      rows: [
+        [1, "", '{"a":1}'],
+        [true, "", ""],
+      ],
+    });
   });
 });
 

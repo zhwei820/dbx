@@ -38,13 +38,26 @@ export function buildSpreadsheetGrid(headers: string[], rows: unknown[][], measu
   const columns = spreadsheetColumns(headers, width, fitSpreadsheetColumnSizes(headers, rows, width, measure));
   const source = rows.map((row) => {
     const record: Record<string, unknown> = {};
-    for (let index = 0; index < width; index++) {
-      const value = row[index];
-      record[`c${index}`] = value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : value;
-    }
+    for (let index = 0; index < width; index++) record[`c${index}`] = spreadsheetCellValue(row[index]);
     return record;
   });
   return { columns, source };
+}
+
+function spreadsheetCellValue(value: unknown): unknown {
+  return value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : value;
+}
+
+// A sheet read straight from the file, shaped like what the grid would save for it: padded headers and cells.
+export function spreadsheetPreviewWorksheet(headers: readonly string[], rows: readonly (readonly unknown[])[]): { columns: string[]; rows: (string | number | boolean)[][] } {
+  let width = headers.length;
+  for (const row of rows) if (row.length > width) width = row.length;
+  const records = rows.map((row) => {
+    const record: SpreadsheetRecord = {};
+    for (let index = 0; index < width; index++) record[`c${index}`] = spreadsheetCellValue(row[index]);
+    return record;
+  });
+  return { columns: Array.from({ length: width }, (_, index) => headers[index] ?? ""), rows: spreadsheetSourceToRows(records, width) };
 }
 
 // Each column is sized to its widest header or sampled value, like a spreadsheet's auto-fit, within the size bounds.

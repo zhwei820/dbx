@@ -46,6 +46,7 @@ import {
   spreadsheetSaveFormat,
   spreadsheetMatchFrom,
   spreadsheetPasteCells,
+  spreadsheetPreviewWorksheet,
   SPREADSHEET_SEARCH_MATCH_LIMIT,
   SPREADSHEET_VIEWER_MAX_ROWS,
   spreadsheetSourceToRows,
@@ -133,8 +134,8 @@ async function switchSheet(sheet: string) {
   if (sheet !== activeSheet.value && (await confirmDiscardEdits())) void load(sheet);
 }
 
-// Only a file opened as CSV can be written back to its own path. Rewriting an opened workbook would keep only the
-// loaded sheet's values, so for those Mod+S always goes through the save dialog.
+// Only a file opened as CSV can be written back to its own path. Rewriting an opened workbook keeps every sheet's
+// values but drops formulas and formatting, so for those Mod+S always goes through the save dialog.
 const savesInPlace = computed(() => fileType.value === "csv");
 const preferredSaveFormat = computed<SpreadsheetSaveFormat>(() => (fileType.value === "excel" ? "xlsx" : "csv"));
 const canSave = computed(() => !loading.value && !saving.value && !truncated.value && !error.value);
@@ -181,6 +182,24 @@ async function confirmEncodingRewrite(): Promise<boolean> {
   return confirmWarning(t("spreadsheet.saveEncodingWarning", { encoding: labelKey ? t(labelKey) : sourceEncoding }));
 }
 
+// Only the active sheet is held in the grid, so the others are re-read from the source file, in workbook order.
+async function workbookWorksheets(activeColumns: string[], activeRows: (string | number | boolean)[][]) {
+  const worksheets: { sheetName: string; columns: string[]; rows: (string | number | boolean)[][] }[] = [];
+  for (const sheetName of sheets.value) {
+    if (sheetName === activeSheet.value) {
+      worksheets.push({ sheetName, columns: activeColumns, rows: activeRows });
+      continue;
+    }
+    const preview = await api.previewTableImportFile(props.filePath, {
+      previewLimit: SPREADSHEET_VIEWER_MAX_ROWS,
+      parseOptions: { sheetName, emptyStringAsNull: false },
+    });
+    if (preview.rows.length >= SPREADSHEET_VIEWER_MAX_ROWS) throw new Error(t("spreadsheet.saveOtherSheetTruncated", { sheet: sheetName }));
+    worksheets.push({ sheetName, ...spreadsheetPreviewWorksheet(preview.columns, preview.rows) });
+  }
+  return worksheets;
+}
+
 async function writeFileTo(outputPath: string, format: SpreadsheetSaveFormat) {
   // Edits made while the file is being written are not part of it.
   const savedState = history.stateId;
@@ -189,7 +208,14 @@ async function writeFileTo(outputPath: string, format: SpreadsheetSaveFormat) {
   const width = grid.value.columns.length;
   const columns = Array.from({ length: width }, (_, index) => headers.value[index] ?? "");
   const rows = spreadsheetSourceToRows(source, width);
-  if (format === "xlsx") {
+  if (format === "xlsx" && fileType.value === "excel" && sheets.value.length > 1) {
+    const worksheets = await workbookWorksheets(columns, rows);
+    await api.exportQueryResultsXlsx(
+      outputPath,
+      worksheets.map((sheet) => ({ ...sheet, rows: spreadsheetXlsxRows(sheet.rows), numericColumnRightAlign: false, autoFilter: false })),
+      false,
+    );
+  } else if (format === "xlsx") {
     await api.exportQueryResultXlsx(outputPath, activeSheet.value, columns, [], undefined, spreadsheetXlsxRows(rows), false, false);
   } else {
     await api.exportQueryResultCsv(outputPath, columns, rows, useSettingsStore().editorSettings.csvQuoteMode);
