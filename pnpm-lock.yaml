@@ -78,12 +78,6 @@ importers:
       '@replit/codemirror-vim':
         specifier: ^6.3.0
         version: 6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.0)
-      '@revolist/revogrid':
-        specifier: 4.28.0
-        version: 4.28.0
-      '@revolist/vue3-datagrid':
-        specifier: 4.28.0
-        version: 4.28.0
       '@tauri-apps/api':
         specifier: 2.11.0
         version: 2.11.0
@@ -302,23 +296,23 @@ importers:
   packages/cli:
     optionalDependencies:
       '@dbx-app/cli-darwin-arm64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-darwin-arm64
       '@dbx-app/cli-darwin-x64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-darwin-x64
       '@dbx-app/cli-linux-arm64-gnu':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-linux-arm64-gnu
       '@dbx-app/cli-linux-x64-gnu':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-linux-x64-gnu
       '@dbx-app/cli-win32-arm64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-win32-arm64
       '@dbx-app/cli-win32-x64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../cli-win32-x64
 
   packages/cli-darwin-arm64: {}
 
@@ -350,23 +344,23 @@ importers:
         version: 4.1.12(@types/node@22.20.5)(@vitest/coverage-v8@4.1.12)(happy-dom@20.10.6)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(stylus@0.57.0)(tsx@4.23.15)(yaml@2.9.1))
     optionalDependencies:
       '@dbx-app/mcp-darwin-arm64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-darwin-arm64
       '@dbx-app/mcp-darwin-x64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-darwin-x64
       '@dbx-app/mcp-linux-arm64-gnu':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-linux-arm64-gnu
       '@dbx-app/mcp-linux-x64-gnu':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-linux-x64-gnu
       '@dbx-app/mcp-win32-arm64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-win32-arm64
       '@dbx-app/mcp-win32-x64':
-        specifier: 0.4.131
-        version: 0.4.131
+        specifier: 0.4.132
+        version: link:../mcp-win32-x64
 
   packages/mcp-win32-arm64: {}
 
@@ -635,82 +629,6 @@ packages:
 
   '@codemirror/view@6.43.0':
     resolution: {integrity: sha512-V7ZCLQO3Jus9hzh2jVCCPW3mO4IBMr43O37PqSUYautJSnnJF41YlgLw21x0fLJTYvJ+Vkm6Gp+qKGH9pltgXA==}
-
-  '@dbx-app/cli-darwin-arm64@0.4.131':
-    resolution: {integrity: sha512-Ns/vQLHQKDCbn3mCFrPh5DgsXg1d+xLlXglPRhQ3j1CZRFMwEu3A882ZfoPNRlDgBo2EnDF84634LjPHjUjtMA==}
-    cpu: [arm64]
-    os: [darwin]
-    hasBin: true
-
-  '@dbx-app/cli-darwin-x64@0.4.131':
-    resolution: {integrity: sha512-Vx1/bp9tZvP4lv5Ybigf8/7g1FnB9eybY7Oip85Imef94+AMAkbAVx/Jv6XA0TilHaqsYLu/d12SqNP2Tg2VVg==}
-    cpu: [x64]
-    os: [darwin]
-    hasBin: true
-
-  '@dbx-app/cli-linux-arm64-gnu@0.4.131':
-    resolution: {integrity: sha512-VT5uFvd4ND1wWumrU04vgRVg4xEi9M20s5mAUOnyxpy1otPrwLUhDzpY7koYKp4Y7weVz3xwR8czDWJ120hDkw==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-    hasBin: true
-
-  '@dbx-app/cli-linux-x64-gnu@0.4.131':
-    resolution: {integrity: sha512-fQICwcrHagmAcW7vOQMtdOmCNhletKq+Xugh8IfoGndamPmOgQDBoicZjBSUkX/YL2LEcd5Q9jLiF+4nzzZfpA==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-    hasBin: true
-
-  '@dbx-app/cli-win32-arm64@0.4.131':
-    resolution: {integrity: sha512-eaSTI4wXxIJq3GaZXlo0S/2rN767i19lFb213qQp9RD+dLC4EntZEZBdIkVQZVLzuVLdUKk09OouhSAZf7ALXw==}
-    cpu: [arm64]
-    os: [win32]
-    hasBin: true
-
-  '@dbx-app/cli-win32-x64@0.4.131':
-    resolution: {integrity: sha512-38gFa0ov7E6A5UWxi0/Z8v/pOpvfyPpuikO0oC1o+60QtMj7ukrDNdu1i0qJ30MpZ/YDE7c6AfYzcSHCJPLrfQ==}
-    cpu: [x64]
-    os: [win32]
-    hasBin: true
-
-  '@dbx-app/mcp-darwin-arm64@0.4.131':
-    resolution: {integrity: sha512-XflVN0Si5/HuW1fRwsDsqs6+PEPVy7p++PaxB5TCswzV4wbfi6YLpCNZH8vVsd0ZHW/3U52+sG+0r/zvmpFkvg==}
-    cpu: [arm64]
-    os: [darwin]
-    hasBin: true
-
-  '@dbx-app/mcp-darwin-x64@0.4.131':
-    resolution: {integrity: sha512-cL0IONxqL/x9PMi3vIlt9OvOD94F3PzOdwq8QH19DUU6FYURhD5YDo/kGmeeauMA4Kte8OBA6tN53D3hIrsqug==}
-    cpu: [x64]
-    os: [darwin]
-    hasBin: true
-
-  '@dbx-app/mcp-linux-arm64-gnu@0.4.131':
-    resolution: {integrity: sha512-OOMBG9bSJLwCAfJBNAnrNtVc83OQ3Vw9ugQ2mmwAjA6CU+5EJSADRsGFrDblcBFsb1LqNSW9ZDRtqtT0dfYgxw==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-    hasBin: true
-
-  '@dbx-app/mcp-linux-x64-gnu@0.4.131':
-    resolution: {integrity: sha512-nluPWso6atJjL+871aPq5/gmYcl5O9yeShjbu9r4d+zSq2j2XvZXjSmo8wQCdHiJrF2TdjYty/likEB5fWjb1w==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-    hasBin: true
-
-  '@dbx-app/mcp-win32-arm64@0.4.131':
-    resolution: {integrity: sha512-TEKsxgicJuR8wrQjuKOtUkCTMlhUobwgrH7X+j9KwSzMP8m+IlVcWO0Hk8teOuP8CIkr6HNDfIUrbHvOtdH6LQ==}
-    cpu: [arm64]
-    os: [win32]
-    hasBin: true
-
-  '@dbx-app/mcp-win32-x64@0.4.131':
-    resolution: {integrity: sha512-VJ0dwokZ07rJFh3X2z99mi0cNfAkBhdEk5gPZFGq5PUaqMjOIpBbXarQxooF6K7G+azlLIACPSdZLbg2Yvg23g==}
-    cpu: [x64]
-    os: [win32]
-    hasBin: true
 
   '@dbx-app/plugin-cli-darwin-arm64@0.1.9':
     resolution: {integrity: sha512-ogk6MgTZlgp/mOovwBa9X/3fMc8YPIweaHbRID7h5mO+6v7Sw2anzzNanz9/YPc/I4NkTiBqdlG0WDu4X37X2w==}
@@ -1366,12 +1284,6 @@ packages:
       '@codemirror/search': 6.x.x
       '@codemirror/state': 6.x.x
       '@codemirror/view': 6.43.0
-
-  '@revolist/revogrid@4.28.0':
-    resolution: {integrity: sha512-Ir+QA69S7Qim4p+RGYPYMYVV9FvJaU+fudIMnR1yniSr6L4xPjDVkIldfLTHN+zHx2f9OKGn1aUUdPXEVuCJkA==}
-
-  '@revolist/vue3-datagrid@4.28.0':
-    resolution: {integrity: sha512-I9qFcL8eidbzykbSJmKxXL1IHhfekwNqrktTOL9TjipdQ73/KeOAbsPSNLlLT7s9BAzyPeLfHZZA/ySCHG1vEA==}
 
   '@rolldown/binding-android-arm-eabi@1.2.15':
     resolution: {integrity: sha512-aLcgK9gIJ3YRvrrtfSBbRa27F5WrpiTaPulnFpsHPxpUHgFlSgnU4854MHwoRGEBhfRJDWCS2WQ7lIjskE9Olw==}
@@ -4529,42 +4441,6 @@ snapshots:
       style-mod: 4.1.4
       w3c-keyname: 2.2.8
 
-  '@dbx-app/cli-darwin-arm64@0.4.131':
-    optional: true
-
-  '@dbx-app/cli-darwin-x64@0.4.131':
-    optional: true
-
-  '@dbx-app/cli-linux-arm64-gnu@0.4.131':
-    optional: true
-
-  '@dbx-app/cli-linux-x64-gnu@0.4.131':
-    optional: true
-
-  '@dbx-app/cli-win32-arm64@0.4.131':
-    optional: true
-
-  '@dbx-app/cli-win32-x64@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-darwin-arm64@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-darwin-x64@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-linux-arm64-gnu@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-linux-x64-gnu@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-win32-arm64@0.4.131':
-    optional: true
-
-  '@dbx-app/mcp-win32-x64@0.4.131':
-    optional: true
-
   '@dbx-app/plugin-cli-darwin-arm64@0.1.9':
     optional: true
 
@@ -5017,12 +4893,6 @@ snapshots:
       '@codemirror/state': 6.7.6
       '@codemirror/view': 6.43.0
       '@replit/codemirror-vim-core': 0.1.0
-
-  '@revolist/revogrid@4.28.0': {}
-
-  '@revolist/vue3-datagrid@4.28.0':
-    dependencies:
-      '@revolist/revogrid': 4.28.0
 
   '@rolldown/binding-android-arm-eabi@1.2.15':
     optional: true
