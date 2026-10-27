@@ -376,7 +376,6 @@ watch(
     @reload="validatePackageSaveAsDrafts"
     @confirm="confirmPackageSaveAs"
   />
-  >>>>>>> 0264cfbb0368274cf23bcf90b88511d3cd115a3b
   <Dialog v-model:open="showRenameObjectDialog">
     <DialogContent :class="isOracleViewRename || isOracleRoutineRename || isOracleTableRename ? 'sm:max-w-[min(90vw,900px)]' : 'sm:max-w-[420px]'">
       <DialogHeader>
