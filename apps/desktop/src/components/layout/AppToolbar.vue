@@ -669,10 +669,10 @@ const toolbarStyle = computed(() => {
               v-show="isRightItemVisible('checkUpdates')"
               data-toolbar-update-trigger
               :data-toolbar-update-action="hasUpdateAvailable ? '' : undefined"
-              :variant="hasUpdateAvailable ? 'default' : 'ghost'"
+              variant="ghost"
               :size="hasUpdateAvailable ? 'sm' : 'icon'"
               class="toolbar-action-button shrink-0"
-              :class="hasUpdateAvailable ? 'h-7 gap-1.5 px-2 text-xs' : 'relative h-8 w-8'"
+              :class="hasUpdateAvailable ? 'h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground' : 'relative h-8 w-8'"
               @click="emit('check-updates')"
             >
               <template v-if="hasUpdateAvailable">
