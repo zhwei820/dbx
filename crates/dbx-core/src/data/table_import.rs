@@ -58,6 +58,10 @@ const JSON_IMPORT_MIXED_ROW_SHAPES: &str =
     "JSON rows must all be objects or all be arrays; mixed row shapes are not supported";
 // Keep preview parsing bounded even when an XLSX dimension declares a huge sparse range.
 const MAX_FAST_PREVIEW_CELLS: usize = 100_000;
+// The spreadsheet viewer previews up to 200k rows, so the dense preview grid budget grows with the
+// requested rows (assuming ~50 columns each) instead of staying at the import dialog's 100k cells.
+const XLSX_PREVIEW_CELLS_PER_REQUESTED_ROW: usize = 50;
+const MAX_XLSX_PREVIEW_GRID_CELLS: usize = 10_000_000;
 // Shared strings stay in memory for small workbooks and spill to an indexed temp file for large ones.
 const MAX_IN_MEMORY_XLSX_SHARED_STRINGS_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_XLSX_SHARED_STRINGS_BYTES: u64 = 1024 * 1024 * 1024;
@@ -3593,6 +3597,9 @@ fn parse_xlsx_preview_file_with_options(
     let row_range = effective_import_row_range(options)?;
     let min_import_row = row_range.title_row.unwrap_or(row_range.data_start_row);
     let preview_limit = preview_limit.max(1);
+    let preview_cell_limit = preview_limit
+        .saturating_mul(XLSX_PREVIEW_CELLS_PER_REQUESTED_ROW)
+        .clamp(MAX_FAST_PREVIEW_CELLS, MAX_XLSX_PREVIEW_GRID_CELLS);
     let preview_end_from = |first_row: usize| {
         let preview_last_row = first_row.saturating_add(preview_limit.saturating_sub(1));
         row_range.last_data_row.map_or(preview_last_row, |last| last.min(preview_last_row))
@@ -3762,10 +3769,10 @@ fn parse_xlsx_preview_file_with_options(
         .saturating_sub(first_preview_row)
         .saturating_add(1)
         .saturating_add(usize::from(row_range.title_row.is_some()));
-    if observed_column_count.saturating_mul(preview_row_count) > MAX_FAST_PREVIEW_CELLS {
+    if observed_column_count.saturating_mul(preview_row_count) > preview_cell_limit {
         return Err(format!(
             "Excel preview grid is too large: {} columns across {} preview rows exceed the {} cell limit",
-            observed_column_count, preview_row_count, MAX_FAST_PREVIEW_CELLS
+            observed_column_count, preview_row_count, preview_cell_limit
         ));
     }
     let dimension_end_column = dimension
@@ -3777,7 +3784,7 @@ fn parse_xlsx_preview_file_with_options(
         .map(|(_, (_, end_column))| end_column)
         .filter(|end_column| {
             end_column.saturating_sub(start_column).saturating_add(1).saturating_mul(preview_row_count)
-                <= MAX_FAST_PREVIEW_CELLS
+                <= preview_cell_limit
         });
     let end_column = dimension_end_column.unwrap_or(observed_end_column).max(observed_end_column);
     let column_count = end_column.saturating_sub(start_column).saturating_add(1);
@@ -9434,6 +9441,34 @@ mod tests {
                 .unwrap();
         assert_eq!(preview.columns.len(), 6);
         assert_eq!(preview.rows.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn xlsx_preview_cell_limit_scales_with_requested_rows() {
+        let path = std::env::temp_dir().join(format!("dbx-wide-preview-limit-{}.xlsx", uuid::Uuid::new_v4()));
+        let mut sheet_xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+        );
+        for row in 1..=3901 {
+            sheet_xml.push_str(&format!(r#"<row r="{row}">"#));
+            for column in ["A", "AX"] {
+                sheet_xml.push_str(&format!(r#"<c r="{column}{row}"><v>{row}</v></c>"#));
+            }
+            sheet_xml.push_str("</row>");
+        }
+        sheet_xml.push_str("</sheetData></worksheet>");
+        std::fs::write(&path, build_preview_test_xlsx(&sheet_xml, None)).unwrap();
+        let options = TableImportParseOptions::default();
+
+        let (preview, _) = parse_xlsx_preview_file_with_options(&path.to_string_lossy(), &options, 200_000).unwrap();
+        assert_eq!(preview.columns.len(), 50);
+        assert_eq!(preview.rows.len(), 3900);
+
+        let small_request = parse_xlsx_preview_file_with_options(&path.to_string_lossy(), &options, 1)
+            .map(|(preview, _)| preview.rows.len());
+        assert_eq!(small_request, Ok(1));
         let _ = std::fs::remove_file(path);
     }
 
