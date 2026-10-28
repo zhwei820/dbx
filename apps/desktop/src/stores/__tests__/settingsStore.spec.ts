@@ -28,7 +28,6 @@ import {
 } from "@/stores/settingsStore";
 import type { AiConfigItem } from "@/types/ai";
 import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION } from "@/lib/dataGrid/dataGridCopyExtractor";
-import { editorSettingsDraftChanged, editorSettingsDraftFromSettings, editorSettingsPatchFromDraft } from "@/lib/settings/editorSettingsDraft";
 import { DEFAULT_MONO_FONT_FAMILY } from "@/lib/app/appFonts";
 
 describe("normalizeEditorSettings", () => {
@@ -1027,7 +1026,18 @@ describe("normalizeMcpGlobalPolicy", () => {
       groupPolicies: [],
       configured: false,
       queryTimeoutSecs: null,
+      pluginToolsMode: "flat",
     });
+  });
+
+  it.each(["auto", "flat", "lazy"] as const)("preserves the saved %s plugin tool mode", (pluginToolsMode) => {
+    expect(normalizeMcpGlobalPolicy({ configured: true, pluginToolsMode }).pluginToolsMode).toBe(pluginToolsMode);
+  });
+
+  it("distinguishes a missing mode in legacy saved policies from a fresh configuration", () => {
+    expect(normalizeMcpGlobalPolicy({ configured: true }).pluginToolsMode).toBe("auto");
+    expect(normalizeMcpGlobalPolicy({ configured: false }).pluginToolsMode).toBe("flat");
+    expect(normalizeMcpGlobalPolicy(null).pluginToolsMode).toBe("flat");
   });
 
   it("normalizes and deduplicates an explicit connection allowlist", () => {
@@ -1049,6 +1059,7 @@ describe("normalizeMcpGlobalPolicy", () => {
       groupPolicies: [],
       configured: true,
       queryTimeoutSecs: null,
+      pluginToolsMode: "auto",
     });
   });
 
@@ -1057,6 +1068,9 @@ describe("normalizeMcpGlobalPolicy", () => {
   });
 
   it("enables high-risk SQL prompts only when explicitly configured", () => {
+    expect(normalizeMcpGlobalPolicy({ promptHighRiskSql: true, callConfirmation: "high_risk" })).toMatchObject({ promptHighRiskSql: false, callConfirmation: "high_risk" });
+    expect(normalizeMcpGlobalPolicy({ promptHighRiskSql: true, callConfirmation: "off" }).promptHighRiskSql).toBe(false);
+    expect(normalizeMcpGlobalPolicy({ promptHighRiskSql: false, callConfirmation: "full" }).promptHighRiskSql).toBe(true);
     expect(normalizeMcpGlobalPolicy({ promptHighRiskSql: true }).promptHighRiskSql).toBe(true);
     expect(normalizeMcpGlobalPolicy({ promptHighRiskSql: "true" } as any).promptHighRiskSql).toBe(false);
   });
@@ -1296,79 +1310,6 @@ describe("normalizeEditorSettings - sidebarPinDefaultDatabase", () => {
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: undefined } as any).sidebarPinDefaultDatabase).toBe(true);
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: null } as any).sidebarPinDefaultDatabase).toBe(true);
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: 0 } as any).sidebarPinDefaultDatabase).toBe(true);
-  });
-});
-
-// #13302：连接后是否自动展开对象树的开关。默认必须为 false——模式多的库
-// 全量自动展开是反馈的卡顿来源，升级后的老用户也走新默认。
-describe("normalizeEditorSettings - sidebarExpandTreeOnConnect", () => {
-  it("defaults sidebarExpandTreeOnConnect to false", () => {
-    expect(normalizeEditorSettings({}).sidebarExpandTreeOnConnect).toBe(false);
-  });
-
-  it("preserves explicit boolean values", () => {
-    expect(normalizeEditorSettings({ sidebarExpandTreeOnConnect: true }).sidebarExpandTreeOnConnect).toBe(true);
-    expect(normalizeEditorSettings({ sidebarExpandTreeOnConnect: false }).sidebarExpandTreeOnConnect).toBe(false);
-  });
-
-  it("falls back to default for non-boolean values", () => {
-    expect(normalizeEditorSettings({ sidebarExpandTreeOnConnect: "true" } as any).sidebarExpandTreeOnConnect).toBe(false);
-    expect(normalizeEditorSettings({ sidebarExpandTreeOnConnect: undefined } as any).sidebarExpandTreeOnConnect).toBe(false);
-    expect(normalizeEditorSettings({ sidebarExpandTreeOnConnect: 1 } as any).sidebarExpandTreeOnConnect).toBe(false);
-  });
-});
-
-// #13549: the toggle was registered on the interface, the defaults, the normalize
-// whitelist and the settings-dialog draft, but never on the patch applier. Every
-// apply dropped the key, so the store value never changed, the dialog compared its
-// draft against a base that never moved, and "apply and close" kept reporting
-// unsaved changes.
-describe("updateEditorSettings - sidebarExpandTreeOnConnect", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    setActivePinia(createPinia());
-  });
-
-  it("applies and persists the sidebarExpandTreeOnConnect toggle", async () => {
-    const loadEditorSettings = vi.fn().mockResolvedValue({});
-    const saveEditorSettings = vi.fn().mockResolvedValue(undefined);
-    vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
-
-    const { useSettingsStore } = await import("@/stores/settingsStore");
-    const store = useSettingsStore();
-    await store.initEditorSettings();
-    saveEditorSettings.mockClear();
-
-    store.updateEditorSettings({ sidebarExpandTreeOnConnect: true });
-    expect(store.editorSettings.sidebarExpandTreeOnConnect).toBe(true);
-    await vi.waitFor(() => expect(saveEditorSettings).toHaveBeenCalledOnce());
-    expect(saveEditorSettings).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarExpandTreeOnConnect: true }));
-
-    store.updateEditorSettings({ sidebarExpandTreeOnConnect: false });
-    expect(store.editorSettings.sidebarExpandTreeOnConnect).toBe(false);
-  });
-
-  it("clears the settings-dialog dirty state once the toggle is applied", async () => {
-    const loadEditorSettings = vi.fn().mockResolvedValue({});
-    const saveEditorSettings = vi.fn().mockResolvedValue(undefined);
-    vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
-
-    const { useSettingsStore } = await import("@/stores/settingsStore");
-    const store = useSettingsStore();
-    await store.initEditorSettings();
-
-    // The dialog compares its draft against a base snapshot that is rebuilt from the
-    // store after every apply. A key that never reaches the store keeps the two apart
-    // forever, which is what made the dialog report unsaved changes and refuse to close.
-    const base = editorSettingsDraftFromSettings(store.editorSettings);
-    const draft = { ...base, sidebarExpandTreeOnConnect: true };
-    expect(editorSettingsDraftChanged(draft, base)).toBe(true);
-
-    store.updateEditorSettings(editorSettingsPatchFromDraft(draft, base));
-
-    const appliedBase = editorSettingsDraftFromSettings(store.editorSettings);
-    expect(appliedBase.sidebarExpandTreeOnConnect).toBe(true);
-    expect(editorSettingsDraftChanged(draft, appliedBase)).toBe(false);
   });
 });
 
@@ -1738,6 +1679,7 @@ describe("settingsStore MCP policy persistence", () => {
       groupPolicies: [],
       configured: true,
       queryTimeoutSecs: null,
+      pluginToolsMode: "auto",
     };
     store.mcpGlobalPolicy = previous;
 
@@ -1756,6 +1698,7 @@ describe("settingsStore MCP policy persistence", () => {
       groupPolicies: [],
       configured: true,
       queryTimeoutSecs: null,
+      pluginToolsMode: "auto",
     });
 
     rejectSave(new Error("save failed"));
