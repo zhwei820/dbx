@@ -8948,6 +8948,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Mostra gli spazi come · e le tabulazioni come → nelle celle. I valori copiati e modificati restano invariati.",
     dataGridStripedRows: "Righe alternate (zebra)",
     dataGridStripedRowsDescription: "Se attivato, le righe pari e dispari nella griglia dei dati mostrano colori di sfondo diversi.",
+    dataGridShowSelectionSummary: "Mostra statistiche della selezione",
+    dataGridShowSelectionSummaryDescription: "Mostra somma, media, minimo e massimo delle celle selezionate nella barra di stato inferiore.",
     flatteningMultiLineText: "Pianifica automaticamente i testi multi-riga",
     flatteningMultiLineTextDescription: "Se attivo, i testi multi-riga nei risultati vengono automaticamente pianificati in una singola colonna.",
     regexMaxMatchCount: "Numero massimo di corrispondenze per Seleziona tutte",

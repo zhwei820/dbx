@@ -7150,7 +7150,7 @@ const selectionSummaryOptions = computed<SelectionSummaryOptions>(() => (usesMon
 
 // 框选拖拽中不物化 selectedCells / 不做数值汇总（大选区下这是 DOM 卡顿主因）
 const selectionSummary = computed(() => {
-  if (!hasCellSelection.value) return null;
+  if (!settingsStore.editorSettings.dataGridShowSelectionSummary || !hasCellSelection.value) return null;
   if (isSelectingCells.value) {
     return createPendingSelectionSummary(selectedCellCount.value, multiRowCount.value);
   }

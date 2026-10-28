@@ -10896,6 +10896,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "แสดงช่องว่างเป็น · และแท็บเป็น → ในเซลล์ข้อมูล ค่าที่คัดลอกและแก้ไขยังคงเดิม",
     dataGridStripedRows: "แถบสีสลับ",
     dataGridStripedRowsDescription: "เมื่อเปิดใช้ แถวสลับกันในกริดข้อมูลจะแสดงสีพื้นหลังต่างกัน",
+    dataGridShowSelectionSummary: "แสดงสถิติของส่วนที่เลือก",
+    dataGridShowSelectionSummaryDescription: "แสดงผลรวม ค่าเฉลี่ย ค่าต่ำสุด และค่าสูงสุดของเซลล์ที่เลือกในแถบสถานะด้านล่าง",
     flatteningMultiLineText: "ทำให้ข้อความหลายบรรทัดเป็นบรรทัดเดียว",
     flatteningMultiLineTextDescription: "รวมข้อความหลายบรรทัดเป็นการแสดงบรรทัดเดียว โดยแสดงจุดขึ้นบรรทัดใหม่เป็น ¶",
     regexMaxMatchCount: "จำนวนผลลัพธ์ Select All Matches สูงสุด",

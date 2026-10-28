@@ -10419,6 +10419,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "在数据单元格中将空格显示为 ·，制表符显示为 →。复制和编辑的值保持不变。",
     dataGridStripedRows: "数据表格斑马纹",
     dataGridStripedRowsDescription: "开启后，数据表格奇偶行交替显示不同背景色，便于横向对齐浏览。",
+    dataGridShowSelectionSummary: "显示选区统计",
+    dataGridShowSelectionSummaryDescription: "选中单元格时，在底部状态栏显示求和、平均值、最小值和最大值。",
     flatteningMultiLineText: "扁平化多行文本",
     flatteningMultiLineTextDescription: "多行文本合并为单行显示，换行符显示为 ¶ 。",
     regexMaxMatchCount: "全部选中最大数量",

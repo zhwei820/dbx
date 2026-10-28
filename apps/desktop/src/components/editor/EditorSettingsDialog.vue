@@ -888,6 +888,7 @@ const editDataGridCrosshairHighlight = ref(settingsStore.editorSettings.dataGrid
 const editDataGridCrosshairRowBg = ref(settingsStore.editorSettings.dataGridCrosshairRowBg);
 const editDataGridCrosshairColBg = ref(settingsStore.editorSettings.dataGridCrosshairColBg);
 const editDataGridStripedRows = ref(settingsStore.editorSettings.dataGridStripedRows);
+const editDataGridShowSelectionSummary = ref(settingsStore.editorSettings.dataGridShowSelectionSummary);
 const editDataGridZebraRowBg = ref(settingsStore.editorSettings.dataGridZebraRowBg);
 const editPageSize = ref(settingsStore.editorSettings.pageSize);
 const editTableOpenPageSize = ref(settingsStore.editorSettings.tableOpenPageSize);
@@ -1318,6 +1319,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     dataGridCrosshairRowBg: editDataGridCrosshairRowBg.value,
     dataGridCrosshairColBg: editDataGridCrosshairColBg.value,
     dataGridStripedRows: editDataGridStripedRows.value,
+    dataGridShowSelectionSummary: editDataGridShowSelectionSummary.value,
     dataGridZebraRowBg: editDataGridZebraRowBg.value,
     flatteningMultiLineText: editFlatteningMultiLineText.value,
     dataGridShowWhitespace: editDataGridShowWhitespace.value,
@@ -2025,6 +2027,7 @@ function syncEditorSettingsDraftFromStore() {
   editDataGridCrosshairRowBg.value = settingsStore.editorSettings.dataGridCrosshairRowBg;
   editDataGridCrosshairColBg.value = settingsStore.editorSettings.dataGridCrosshairColBg;
   editDataGridStripedRows.value = settingsStore.editorSettings.dataGridStripedRows;
+  editDataGridShowSelectionSummary.value = settingsStore.editorSettings.dataGridShowSelectionSummary;
   editDataGridZebraRowBg.value = settingsStore.editorSettings.dataGridZebraRowBg;
   editFlatteningMultiLineText.value = settingsStore.editorSettings.flatteningMultiLineText;
   editDataGridShowWhitespace.value = settingsStore.editorSettings.dataGridShowWhitespace;
@@ -2204,6 +2207,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   dataGridCrosshairRowBg: editDataGridCrosshairRowBg,
   dataGridCrosshairColBg: editDataGridCrosshairColBg,
   dataGridStripedRows: editDataGridStripedRows,
+  dataGridShowSelectionSummary: editDataGridShowSelectionSummary,
   dataGridZebraRowBg: editDataGridZebraRowBg,
   pageSize: editPageSize,
   tableOpenPageSize: editTableOpenPageSize,
@@ -2884,6 +2888,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editDataGridCrosshairRowBg.value = DEFAULT_EDITOR_SETTINGS.dataGridCrosshairRowBg;
     editDataGridCrosshairColBg.value = DEFAULT_EDITOR_SETTINGS.dataGridCrosshairColBg;
     editDataGridStripedRows.value = DEFAULT_EDITOR_SETTINGS.dataGridStripedRows;
+    editDataGridShowSelectionSummary.value = DEFAULT_EDITOR_SETTINGS.dataGridShowSelectionSummary;
     editDataGridZebraRowBg.value = DEFAULT_EDITOR_SETTINGS.dataGridZebraRowBg;
     editFlatteningMultiLineText.value = DEFAULT_EDITOR_SETTINGS.flatteningMultiLineText;
     editDataGridShowWhitespace.value = DEFAULT_EDITOR_SETTINGS.dataGridShowWhitespace;
@@ -3025,6 +3030,7 @@ function resetAllDefaults() {
   editDataGridCrosshairRowBg.value = DEFAULT_EDITOR_SETTINGS.dataGridCrosshairRowBg;
   editDataGridCrosshairColBg.value = DEFAULT_EDITOR_SETTINGS.dataGridCrosshairColBg;
   editDataGridStripedRows.value = DEFAULT_EDITOR_SETTINGS.dataGridStripedRows;
+  editDataGridShowSelectionSummary.value = DEFAULT_EDITOR_SETTINGS.dataGridShowSelectionSummary;
   editDataGridZebraRowBg.value = DEFAULT_EDITOR_SETTINGS.dataGridZebraRowBg;
   editFlatteningMultiLineText.value = DEFAULT_EDITOR_SETTINGS.flatteningMultiLineText;
   editDataGridShowWhitespace.value = DEFAULT_EDITOR_SETTINGS.dataGridShowWhitespace;
@@ -10730,6 +10736,13 @@ onUnmounted(() => {
                     </div>
                     <Switch id="data-grid-striped-rows" v-model="editDataGridStripedRows" />
                   </div>
+                </div>
+                <div data-settings-search-id="data-grid-show-selection-summary" class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="space-y-1">
+                    <Label for="data-grid-show-selection-summary">{{ t("settings.dataGridShowSelectionSummary") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.dataGridShowSelectionSummaryDescription") }}</p>
+                  </div>
+                  <Switch id="data-grid-show-selection-summary" v-model="editDataGridShowSelectionSummary" />
                 </div>
                 <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">

@@ -8947,6 +8947,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Mostrar espaços como · e tabulações como → nas células. Os valores copiados e editados permanecem inalterados.",
     dataGridStripedRows: "Linhas zebradas",
     dataGridStripedRowsDescription: "Quando ativado, as linhas pares e ímpares na grade de dados exibem cores de fundo alternadas.",
+    dataGridShowSelectionSummary: "Mostrar estatísticas da seleção",
+    dataGridShowSelectionSummaryDescription: "Mostra a soma, a média, o mínimo e o máximo das células selecionadas na barra de status inferior.",
     flatteningMultiLineText: "Achatar texto multilinha",
     flatteningMultiLineTextDescription: "Exibir texto multilinha em uma única linha.",
     regexMaxMatchCount: "Máximo de correspondências para selecionar todas",

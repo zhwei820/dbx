@@ -485,6 +485,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
   { id: "data-grid-flattening-multi-line", category: "data", titleKey: "settings.flatteningMultiLineText", descriptionKey: "settings.flatteningMultiLineTextDescription", targetId: "data" },
   { id: "data-grid-show-whitespace", category: "data", titleKey: "settings.dataGridShowWhitespace", descriptionKey: "settings.dataGridShowWhitespaceDescription", targetId: "data" },
   { id: "data-grid-striped-rows", category: "data", titleKey: "settings.dataGridStripedRows", descriptionKey: "settings.dataGridStripedRowsDescription", targetId: "data-grid-striped-rows" },
+  { id: "data-grid-show-selection-summary", category: "data", titleKey: "settings.dataGridShowSelectionSummary", descriptionKey: "settings.dataGridShowSelectionSummaryDescription", targetId: "data-grid-show-selection-summary" },
   { id: "sql-file-editor-max-mb", category: "editor", titleKey: "settings.externalSqlEditorMaxMb", descriptionKey: "settings.externalSqlEditorMaxMbDescription", targetId: "editor-sql-file" },
   { id: "sql-file-web-upload-max-mb", category: "data", titleKey: "settings.webSqlFileUploadMaxMb", descriptionKey: "settings.webSqlFileUploadMaxMbDescription", targetId: "data-sql-file-upload", visible: (context) => context.isWeb },
   { id: "appearance-toolbar", category: "appearance", titleKey: "settings.toolbarTitle", descriptionKey: "settings.toolbarHiddenHint", targetId: "appearance" },

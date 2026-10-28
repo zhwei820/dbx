@@ -7811,6 +7811,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Veri hücrelerinde boşlukları ·, sekmeleri → olarak gösterir. Kopyalanan ve düzenlenen değerler değişmez.",
     dataGridStripedRows: "Zebra çizgileri",
     dataGridStripedRowsDescription: "Etkinleştirildiğinde veri tablosundaki tek ve çift satırlar farklı arka plan renkleriyle dönüşümlü olarak gösterilir.",
+    dataGridShowSelectionSummary: "Seçim istatistiklerini göster",
+    dataGridShowSelectionSummaryDescription: "Hücreler seçildiğinde alt durum çubuğunda toplam, ortalama, minimum ve maksimum değerleri gösterir.",
     flatteningMultiLineText: "Çok Satırlı Metni Düzleştirme",
     flatteningMultiLineTextDescription: "Çok satırlı metin, satır sonları ¶ ile gösterilerek tek satırda birleştirilir.",
     regexMaxMatchCount: 'En fazla "tümünü seç" eşleşmesi',

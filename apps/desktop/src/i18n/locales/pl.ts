@@ -9118,6 +9118,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Pokazuj spacje jako · oraz tabulatory jako → w komórkach danych. Kopiowane i edytowane wartości pozostają bez zmian.",
     dataGridStripedRows: "Pasy zebry",
     dataGridStripedRowsDescription: "Gdy włączone, naprzemienne wiersze w siatce danych mają różne kolory tła.",
+    dataGridShowSelectionSummary: "Pokaż statystyki zaznaczenia",
+    dataGridShowSelectionSummaryDescription: "Pokazuje sumę, średnią, minimum i maksimum zaznaczonych komórek na dolnym pasku stanu.",
     flatteningMultiLineText: "Spłaszczanie tekstu wielowierszowego",
     flatteningMultiLineTextDescription: "Tekst wielowierszowy jest łączony w jedną linię, a podziały wierszy są wyświetlane jako symbol ¶ .",
     regexMaxMatchCount: "Maksymalna liczba dopasowań zaznaczania",

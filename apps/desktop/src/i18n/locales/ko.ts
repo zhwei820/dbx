@@ -9071,6 +9071,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "데이터 셀의 공백을 ·, 탭을 →로 표시합니다. 복사하거나 편집하는 값은 변경되지 않습니다.",
     dataGridStripedRows: "줄무늬 행",
     dataGridStripedRowsDescription: "활성화하면 데이터 그리드의 홀수 행과 짝수 행에 교차 배경색이 표시됩니다.",
+    dataGridShowSelectionSummary: "선택 통계 표시",
+    dataGridShowSelectionSummaryDescription: "셀을 선택하면 하단 상태 표시줄에 합계, 평균, 최솟값, 최댓값을 표시합니다.",
     flatteningMultiLineText: "멀티라인 텍스트 단순화",
     flatteningMultiLineTextDescription: "다중 행 텍스트를 단일 행으로 병합하여 표시하고, 개행 문자는 ¶로 표시합니다.",
     tableColumnTemplateFields: "새 테이블 미리 정의된 필드",

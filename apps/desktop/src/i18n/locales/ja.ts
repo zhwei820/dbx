@@ -10202,6 +10202,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "データセルのスペースを ·、タブを → で表示します。コピーや編集する値は変わりません。",
     dataGridStripedRows: "ゼブラストライプ",
     dataGridStripedRowsDescription: "有効にすると、データグリッドの奇数行と偶数行が異なる背景色で交互に表示されます。",
+    dataGridShowSelectionSummary: "選択範囲の統計を表示",
+    dataGridShowSelectionSummaryDescription: "セルを選択したとき、下部のステータスバーに合計・平均・最小・最大を表示します。",
     flatteningMultiLineText: "多行テキストを展開",
     flatteningMultiLineTextDescription: "複数行のテキストを1行に結合して表示し、改行文字は¶として表示する。",
     regexMaxMatchCount: "すべての一致を選択する最大数",

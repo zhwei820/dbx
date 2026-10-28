@@ -7928,6 +7928,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Verilənlər xanalarında boşluqları ·, tabulyasiyaları → kimi göstərir. Kopyalanan və redaktə edilən dəyərlər dəyişmir.",
     dataGridStripedRows: "Zebra zolaqları",
     dataGridStripedRowsDescription: "Aktiv olduqda verilənlər cədvəlində tək və cüt sətirlər fərqli fon rənglərində göstərilir.",
+    dataGridShowSelectionSummary: "Seçim statistikasını göstər",
+    dataGridShowSelectionSummaryDescription: "Xanalar seçildikdə alt status zolağında cəm, orta, minimum və maksimum dəyərləri göstərir.",
     flatteningMultiLineText: "Çoxsətirli mətnin bir sətrə birləşdirilməsi",
     flatteningMultiLineTextDescription: "Çoxsətirli mətn bir sətirdə göstərilir, sətir keçidləri ¶ kimi göstərilir.",
     regexMaxMatchCount: "Hamısını seçmək üçün maksimum uyğunluq sayı",

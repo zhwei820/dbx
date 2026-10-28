@@ -8145,6 +8145,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "在資料儲存格中將空格顯示為 ·，定位字元顯示為 →。複製和編輯的值保持不變。",
     dataGridStripedRows: "資料表格斑馬紋",
     dataGridStripedRowsDescription: "開啟後，資料表格奇偶列交替顯示不同背景色，便於橫向對齊瀏覽。",
+    dataGridShowSelectionSummary: "顯示選取範圍統計",
+    dataGridShowSelectionSummaryDescription: "選取儲存格時，在底部狀態列顯示加總、平均值、最小值和最大值。",
     flatteningMultiLineText: "扁平多行文本",
     flatteningMultiLineTextDescription: "多行文本合併為單行顯示，換行符顯示為 ¶ 。",
     regexMaxMatchCount: "全部選取最大數量",

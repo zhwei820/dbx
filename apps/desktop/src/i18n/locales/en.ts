@@ -10452,6 +10452,8 @@ export default {
     dataGridShowWhitespaceDescription: "Show spaces as · and tabs as → in data cells. Copied and edited values remain unchanged.",
     dataGridStripedRows: "Zebra stripes",
     dataGridStripedRowsDescription: "When enabled, alternating rows in the data grid display different background colors.",
+    dataGridShowSelectionSummary: "Show selection statistics",
+    dataGridShowSelectionSummaryDescription: "Show sum, average, min and max of the selected cells in the bottom status bar.",
     flatteningMultiLineText: "Flattening Multi-line Text",
     flatteningMultiLineTextDescription: "Multi-line text merged into single line display, with line breaks shown as ¶ .",
     regexMaxMatchCount: "Maximum select-all matches",

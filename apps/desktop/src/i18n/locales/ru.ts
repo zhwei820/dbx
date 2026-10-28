@@ -10504,6 +10504,8 @@ export default withEnglishFallback({
     dataGridShowWhitespaceDescription: "Показывать пробелы как ·, а табуляции как → в ячейках данных. Копируемые и редактируемые значения не меняются.",
     dataGridStripedRows: "Чередование строк (зебра)",
     dataGridStripedRowsDescription: "Если включено, четные и нечетные строки в таблице данных отображаются с чередующимся фоном.",
+    dataGridShowSelectionSummary: "Показывать статистику выделения",
+    dataGridShowSelectionSummaryDescription: "Показывает сумму, среднее, минимум и максимум выделенных ячеек в нижней строке состояния.",
     flatteningMultiLineText: "Объединение многострочного текста",
     flatteningMultiLineTextDescription: "Многострочный текст отображается одной строкой, переносы строк показаны как ¶ .",
     regexMaxMatchCount: "Максимум совпадений при выборе всех",
