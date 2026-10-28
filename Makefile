@@ -11,7 +11,7 @@ ifeq ($(TAURI_SIGNING_PRIVATE_KEY),)
 TAURI_BUILD_FLAGS ?= --config '{"bundle":{"createUpdaterArtifacts":false}}'
 endif
 
-.PHONY: help install docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
+.PHONY: help install docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean sweep docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
 
 export DB
 export DB_VERSION
@@ -91,6 +91,10 @@ reinstall: node_modules/.modules.yaml ## Rebuild DBX.app if sources changed, the
 
 clean: ## Remove local Rust build artifacts and caches
 	cargo clean
+
+# Keeps units read or written within KEEP_DAYS of each profile's latest build; DRY_RUN=1 only reports.
+sweep: ## Remove stale Rust build artifacts, keeping those used by the latest builds. KEEP_DAYS=1 DRY_RUN=1
+	node scripts/sweep-target.mjs --keep-days $(or $(KEEP_DAYS),1) $(if $(filter 1,$(DRY_RUN)),--dry-run) $(or $(TARGET_DIRS),target)
 
 docs: docs/node_modules/.modules.yaml ## Start the documentation site development server
 	cd docs && ./node_modules/.bin/next dev --hostname 127.0.0.1
