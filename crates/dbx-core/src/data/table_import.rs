@@ -3784,7 +3784,7 @@ fn parse_xlsx_preview_file_with_options(
         .map(|(_, (_, end_column))| end_column)
         .filter(|end_column| {
             end_column.saturating_sub(start_column).saturating_add(1).saturating_mul(preview_row_count)
-                <= preview_cell_limit
+                <= MAX_FAST_PREVIEW_CELLS
         });
     let end_column = dimension_end_column.unwrap_or(observed_end_column).max(observed_end_column);
     let column_count = end_column.saturating_sub(start_column).saturating_add(1);
