@@ -40,7 +40,7 @@ install: ## Install root project dependencies and local plugins (LOCAL_PLUGINS)
 install-local-plugins: ## Package and install LOCAL_PLUGINS into the local DBX plugin store
 	@set -e; for dir in $(LOCAL_PLUGINS); do \
 		if [ ! -f "$$dir/manifest.json" ]; then echo "Skipping local plugin $$dir (no manifest.json)"; continue; fi; \
-		out="target/local-plugins/$$(basename "$$dir")"; \
+		out="$(CURDIR)/target/local-plugins/$$(basename "$$dir")"; \
 		rm -rf "$$out"; \
 		node packages/plugin-cli/bin/dbx-plugin.js package "$$dir" --output-dir "$$out"; \
 		for pkg in "$$out"/*.dbxp; do \
