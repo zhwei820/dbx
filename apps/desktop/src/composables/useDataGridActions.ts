@@ -449,7 +449,23 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
           queryStore.clearInvalidDataTabSort(tab.id);
           const rebuiltColumnNames = tab.tableMeta?.columns.map((column) => column.name) ?? [];
           incomingSortMissing = rebuiltColumnNames.length > 0 && simpleDataGridOrderByReferencesMissingColumn(orderBy, rebuiltColumnNames);
-          if (incomingSortMissing) tab.orderByInput = undefined;
+          if (incomingSortMissing) {
+            // 移除 ORDER BY 时必须同步熄灭列头排序图标（issue #13350）：这里的
+            // 清理发生在元数据重建之后，clearInvalidDataTabSort 早已用旧列清单
+            // 判定过一次；若排序状态仍指向存活的列，它不会被前者清掉，只清
+            // orderByInput 会留下「图标亮、数据无序」的错位。字段集合与
+            // queryStore.clearInvalidDataTabSortState 的失效排序清理保持一致。
+            tab.orderByInput = undefined;
+            tab.resultSortColumn = undefined;
+            tab.resultSortColumnIndex = undefined;
+            tab.resultSortDirection = undefined;
+            tab.resultSortMode = undefined;
+            tab.resultSortedSql = undefined;
+            tab.resultLocalSortOriginalRows = undefined;
+            tab.resultLocalSortOriginalLargeValueCells = undefined;
+            tab.resultLocalSortOriginalMongoDocuments = undefined;
+            tab.resultLocalSortOriginalMongoCopyDocuments = undefined;
+          }
           if (intent === "refresh" && !lifecycleStale) {
             void refreshDataTabTableMeta(tab, { force: false, trace: { traceId, elapsed } })
               .then(() => {
@@ -529,6 +545,10 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
         pendingDataReloads.delete(tab);
       }
     }
+    const refreshOptions = {
+      ...refreshActiveResultRunOptions(tab),
+      ...(tab.mode === "query" && (intent === "refresh" || intent === "auto-refresh") ? { publicationOrigin: "refresh" as const } : {}),
+    };
     if ((intent === "refresh" || intent === "auto-refresh" || intent === "row-identifier-change") && tab.mode === "query" && (tab.results?.length ?? 0) > 1) {
       const resultGroupSql = tab.resultBaseSql || tab.lastExecutedSql || tab.sql;
       if (!resultGroupSql.trim()) return;
@@ -539,7 +559,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       tab.resultSortedSql = undefined;
       await queryStore.executeTabSql(tab.id, resultGroupSql, {
         ...activeQueryTargetOptions(tab),
-        ...refreshActiveResultRunOptions(tab),
+        ...refreshOptions,
         resultBaseSql: resultGroupSql,
         resultSortedSql: undefined,
         preserveResultDuringExecution: true,
@@ -552,7 +572,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       const rebuildHiddenKeySort = !!tab.result?.hidden_column_indexes?.length && tab.resultSortMode === "database" && !!tab.resultSortDirection && !!tab.resultSortColumn && !!sortColumns;
       await queryStore.executeTabSql(tab.id, rebuildHiddenKeySort ? (tab.resultBaseSql ?? tab.sql) : tab.resultSortedSql, {
         ...activeQueryTargetOptions(tab),
-        ...refreshActiveResultRunOptions(tab),
+        ...refreshOptions,
         resultBaseSql: tab.resultBaseSql ?? tab.sql,
         ...(rebuildHiddenKeySort
           ? {
@@ -573,7 +593,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       const hasMultiResults = tab.mode === "query" && (tab.results?.length ?? 0) > 1;
       await queryStore.executeTabSql(tab.id, sql, {
         ...(tab.mode === "query" ? activeQueryTargetOptions(tab) : {}),
-        ...refreshActiveResultRunOptions(tab),
+        ...refreshOptions,
         resultBaseSql: sql,
         resultSortedSql: undefined,
         preserveResultDuringExecution: true,

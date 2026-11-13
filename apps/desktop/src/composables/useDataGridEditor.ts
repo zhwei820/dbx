@@ -17,6 +17,7 @@ import { useHistoryStore } from "@/stores/historyStore";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import { assessProductionSql, productionContextForDatabase } from "@/lib/database/productionSafety";
 import { ensureReadOnlyWriteAccess, isWriteUnlockActive } from "@/lib/database/readOnlyWriteAccess";
+import { mysqlDataCharsetEnabled } from "@/lib/connection/mysqlDataCharset";
 import type { ColumnInfo, DatabaseType } from "@/types/database";
 import { DBX_NEO4J_ELEMENT_ID_COLUMN, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
@@ -170,6 +171,7 @@ export interface UseDataGridEditorOptions {
   prepareFullReload?: () => void;
   /** The adopted save (started by a previous grid instance that is gone) finished and the host grid refreshed. */
   onAdoptedSaveCompleted?: () => void;
+  hasPendingEditorDraft?: () => boolean;
   emit: (event: "reload", sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number) => void;
 }
 
@@ -219,6 +221,24 @@ type PendingChangesHistorySnapshot = Pick<PendingChangesSnapshot, "newRows" | "n
 
 const pendingChangesCache = new Map<string, PendingChangesSnapshot>();
 const closingPendingSnapshotTabs = new Set<string>();
+const livePendingChanges = new Map<object, { cacheKey: () => string | undefined; state: () => "saving" | "pending" | undefined }>();
+
+/** Check the result being replaced, including drafts cached while its grid is hidden. */
+export function dataGridPendingChangesState(cacheKey: string, tabId: string, revision?: string): "saving" | "pending" | undefined {
+  if (adoptablePendingSave(saveRegistryKey(tabId, revision))) return "saving";
+  let pending = false;
+  for (const editor of livePendingChanges.values()) {
+    if (editor.cacheKey() !== cacheKey) continue;
+    const state = editor.state();
+    if (state === "saving") return state;
+    pending ||= state === "pending";
+  }
+  const cached = pendingChangesCache.get(cacheKey);
+  if (pending) return "pending";
+  if (!cached) return undefined;
+  const hasCachedChanges = cached.dirtyRows.size > 0 || cached.newRows.length > 0 || cached.deletedRows.size > 0 || !!cached.editingCell || cached.quickEntryDraftRow?.some((value) => value !== null && String(value).trim() !== "");
+  return hasCachedChanges ? "pending" : undefined;
+}
 
 /**
  * In-flight saves, keyed by tab and result payload.
@@ -591,7 +611,11 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   const isConditionalUpdateActive = computed(() => conditionalUpdateExecution.value !== undefined);
 
   const hasBackendSaveTarget = computed(() => !!connectionId.value && !!tableMeta.value);
-  const useTransaction = computed(() => editable.value && supportsDataGridTransaction(resolvedDatabaseType.value) && (!!customSaveHandler?.value || hasBackendSaveTarget.value));
+  // External JDBC drivers have no batch-transaction path even when their dialect
+  // is inferred as a transactional engine (e.g. a driver reporting itself as H2),
+  // so the raw connection type decides whether saves run in a transaction (#12657).
+  const transactionDatabaseType = computed(() => (connectionStore.getConfig(connectionId.value ?? "")?.db_type === "jdbc" ? "jdbc" : resolvedDatabaseType.value));
+  const useTransaction = computed(() => editable.value && supportsDataGridTransaction(transactionDatabaseType.value) && (!!customSaveHandler?.value || hasBackendSaveTarget.value));
 
   if (hasPendingChanges.value && useTransaction.value) {
     transactionActive.value = true;
@@ -2455,6 +2479,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     }
     const customHandler = customSaveHandler?.value;
     const connection = connectionStore.getConfig(connectionId.value ?? "");
+    if (mysqlDataCharsetEnabled(connection)) return;
     if (connection?.read_only) {
       if (saveOptions.autoSave && !isWriteUnlockActive(connection.id)) return;
       if (!(await ensureReadOnlyWriteAccess({ connection, sql: describeDataGridChanges(snapshot), source: i18n.global.t("readOnlyUnlock.sourceDataEditor"), treatAsMutation: true }))) {
@@ -2875,6 +2900,14 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   }
 
   if (componentInstance) {
+    const pendingChangesOwner = {};
+    livePendingChanges.set(pendingChangesOwner, {
+      cacheKey: () => cacheKey?.value,
+      state: () => {
+        if (isSaving.value) return "saving";
+        return hasPendingChanges.value || options.hasPendingEditorDraft?.() || draftRowHasValue() ? "pending" : undefined;
+      },
+    });
     onMounted(() => {
       componentActive = true;
       mounted = true;
@@ -2900,6 +2933,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     // restored if a new DataGrid instance is created for the same tab
     // (e.g. after result eviction + reload).
     onBeforeUnmount(() => {
+      livePendingChanges.delete(pendingChangesOwner);
       if (currentRecord) releasePendingSaveRecord(currentRecord);
       // Persist even mid-save: the snapshot is marked `saving`, so a grid that
       // returns after a failure still restores changes it can retry.

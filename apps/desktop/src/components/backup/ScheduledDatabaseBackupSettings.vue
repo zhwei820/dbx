@@ -601,6 +601,11 @@ function toggleDatabase(database: string) {
   selectedDatabases.value = databaseOptions.value.filter((item) => selected.has(item));
 }
 
+function updateSelectedDatabases(databases: string[]) {
+  const selected = new Set(databases);
+  selectedDatabases.value = databaseOptions.value.filter((item) => selected.has(item));
+}
+
 async function chooseDestination() {
   const { open } = await import("@tauri-apps/plugin-dialog");
   // 传入当前目录，让系统选择框直接定位到上次使用的位置（issue #11317）
@@ -1092,7 +1097,7 @@ async function restoreBackup(run: DatabaseBackupRun, file: DatabaseBackupFile) {
                 <div class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted" role="progressbar" :aria-label="t('databaseBackup.progress')" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="run.progressPercent ?? 0">
                   <div class="h-full rounded-full bg-primary transition-[width] duration-300" :style="{ width: `${run.progressPercent ?? 0}%` }" />
                 </div>
-                <span class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{{ run.progressPercent ?? 0 }}%</span>
+                <span class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{{ Math.round(run.progressPercent ?? 0) }}%</span>
               </div>
             </div>
             <div class="flex items-center justify-end gap-1">
@@ -1169,6 +1174,7 @@ async function restoreBackup(run: DatabaseBackupRun, file: DatabaseBackupFile) {
           @change-connection="changeConnection"
           @choose-destination="chooseDestination"
           @toggle-database="toggleDatabase"
+          @update:selected-databases="updateSelectedDatabases"
           @update:all-databases="setAllDatabases"
           @update:table-patterns-input="(value: string) => (tablePatternsInput = value)"
           @table-selection-state="(state) => (scheduleTableSelectionState = state)"
@@ -1264,6 +1270,7 @@ async function restoreBackup(run: DatabaseBackupRun, file: DatabaseBackupFile) {
         @toggle-connection="toggleOneShotConnection"
         @choose-destination="chooseDestination"
         @toggle-database="toggleDatabase"
+        @update:selected-databases="updateSelectedDatabases"
         @update:all-databases="setAllDatabases"
         @update:table-patterns-input="(value: string) => (tablePatternsInput = value)"
         @table-selection-state="(state) => (oneShotTableSelectionState = state)"

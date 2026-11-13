@@ -106,6 +106,7 @@ import {
   type MongoDocumentQueryKind,
 } from "@/lib/mongo/mongoCompletion";
 import { mongoDocumentsToQueryResult } from "@/lib/mongo/mongoShellCommand";
+import { handleMongoQueryInputBrackets } from "@/lib/mongo/mongoQueryInputBrackets";
 import type { GridNewRowMeta } from "@/lib/dataGrid/gridNewRowPlacement";
 import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
 import { documentDataGridColumnLayoutScopeKey } from "@/lib/dataGrid/dataGridColumnLayoutStorage";
@@ -198,6 +199,7 @@ const viewMode = computed<ViewMode>({
   set: (value) => settingsStore.updateEditorSettings({ mongoViewMode: value }),
 });
 const filterInput = ref(restoredDocumentBrowserState?.filterInput ?? "");
+const filterEnabled = ref(restoredDocumentBrowserState?.filterEnabled ?? true);
 const sortInput = ref(restoredDocumentBrowserState?.sortInput ?? "");
 const localColumnFilters = ref<SerializedDataGridLocalColumnFilters>(restoredDocumentBrowserState?.localColumnFilters ?? {});
 const localColumnFilterColumns = ref<string[] | undefined>(restoredDocumentBrowserState?.localColumnFilterColumns);
@@ -392,6 +394,7 @@ function persistDocumentBrowserState(options: { includeData?: boolean } = {}) {
   if (!props.stateKey) return;
   saveDocumentBrowserState(props.stateKey, {
     filterInput: filterInput.value,
+    filterEnabled: filterEnabled.value,
     sortInput: sortInput.value,
     appliedDocumentFilter: appliedDocumentFilter.value,
     documentFilterRules: documentFilterRules.value,
@@ -416,7 +419,7 @@ function handleLocalColumnFiltersChange(filters: SerializedDataGridLocalColumnFi
 // changed query means the local-filter snapshot no longer describes what the
 // user is looking at.
 watch(
-  [filterInput, sortInput, appliedDocumentFilter],
+  [filterInput, filterEnabled, sortInput, appliedDocumentFilter],
   () => {
     localColumnFilters.value = {};
     localColumnFilterColumns.value = undefined;
@@ -1046,7 +1049,7 @@ function resetElasticsearchPagination() {
 }
 
 function currentDocumentFilter(): string | undefined {
-  const filter = currentDocumentFilterJson(filterInput.value, appliedDocumentFilter.value, documentStoreProvider.value.kind);
+  const filter = filterEnabled.value ? currentDocumentFilterJson(filterInput.value, appliedDocumentFilter.value, documentStoreProvider.value.kind) : undefined;
   if (documentStoreProvider.value.kind !== "dynamodb" || dynamodbIndexName.value === "__table__") return filter;
   const parsed = filter ? JSON.parse(filter) : {};
   return JSON.stringify({ ...parsed, $index: dynamodbIndexName.value });
@@ -1125,6 +1128,7 @@ const documentQueryCompletionActiveDescendant = computed(() => (documentQueryCom
 // Guards the field lookup: a keystroke that lands while a previous refresh is
 // still awaiting fields must win, and a dismiss must cancel both.
 let documentQueryCompletionRequestId = 0;
+let documentQueryCompletionSelectionVersion = 0;
 
 function documentQueryCompletionKind(target: DocumentQueryCompletionTarget): MongoDocumentQueryKind {
   return target === "filter" ? "filter" : "sortKeys";
@@ -1188,18 +1192,27 @@ async function refreshDocumentQueryCompletions(target: DocumentQueryCompletionTa
   }
 
   const requestId = ++documentQueryCompletionRequestId;
+  const selectionVersion = documentQueryCompletionSelectionVersion;
+  let displayedLocalItems = false;
+  const publishItems = (fields: MongoCompletionField[]) => {
+    const selectedLabel = displayedLocalItems && selectionVersion !== documentQueryCompletionSelectionVersion ? documentQueryCompletionItems.value[documentQueryCompletionIndex.value]?.label : undefined;
+    const items = buildMongoCompletionItemsFromContext(context, { fields }).slice(0, DOCUMENT_QUERY_COMPLETION_MENU_LIMIT);
+    if (items.length === 0) return false;
+    documentQueryCompletionTarget.value = target;
+    documentQueryCompletionItems.value = items;
+    documentQueryCompletionIndex.value = Math.max(
+      0,
+      items.findIndex((item) => item.label === selectedLabel),
+    );
+    updateDocumentQueryCompletionPosition(target);
+    return true;
+  };
+  // A partially typed field can use the loaded page immediately. Sampling may
+  // take seconds on a remote collection and only needs to enrich these items.
+  if (context.prefix && mongoCompletionNeedsFields(context.mode)) displayedLocalItems = publishItems(documentQueryCompletionLocalFields.value);
   const fields = mongoCompletionNeedsFields(context.mode) ? await documentQueryCompletionFields() : [];
   if (requestId !== documentQueryCompletionRequestId) return;
-
-  const items = buildMongoCompletionItemsFromContext(context, { fields }).slice(0, DOCUMENT_QUERY_COMPLETION_MENU_LIMIT);
-  if (items.length === 0) {
-    dismissDocumentQueryCompletions();
-    return;
-  }
-  documentQueryCompletionTarget.value = target;
-  documentQueryCompletionItems.value = items;
-  documentQueryCompletionIndex.value = 0;
-  updateDocumentQueryCompletionPosition(target);
+  if (!publishItems(fields)) dismissDocumentQueryCompletions();
 }
 
 /**
@@ -1237,6 +1250,7 @@ watch(documentQueryCompletionOpen, (open) => {
 
 function selectDocumentQueryCompletion(index: number) {
   if (index < 0 || index >= documentQueryCompletionItems.value.length) return;
+  documentQueryCompletionSelectionVersion++;
   documentQueryCompletionIndex.value = index;
   void nextTick(() => {
     const listbox = document.getElementById(documentQueryCompletionListboxId);
@@ -1380,6 +1394,10 @@ function onDocumentQueryKeydown(event: KeyboardEvent, target: DocumentQueryCompl
   if (event.isComposing) return;
 
   if (documentQueryCompletionEnabled.value) {
+    if (handleMongoQueryInputBrackets(event, settingsStore.editorSettings.autoCloseBrackets)) {
+      void nextTick(() => refreshDocumentQueryCompletions(target));
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.code === "Space") {
       event.preventDefault();
       void refreshDocumentQueryCompletions(target, { force: true });
@@ -3297,7 +3315,10 @@ defineExpose({ focusSearch });
                 </div>
               </PopoverContent>
             </Popover>
-            <span class="text-blue-600 dark:text-blue-400 text-xs font-medium select-none shrink-0">{{ documentStoreLabels.filterInputLabel }}</span>
+            <label class="flex shrink-0 items-center gap-1 text-xs font-medium select-none" :class="filterEnabled ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'">
+              <input v-model="filterEnabled" type="checkbox" class="h-3.5 w-3.5 accent-primary" :aria-label="t('grid.applyFilter')" :disabled="loading" @change="applyFilter" />
+              {{ documentStoreLabels.filterInputLabel }}
+            </label>
             <textarea
               ref="filterInputRef"
               v-model="filterInput"

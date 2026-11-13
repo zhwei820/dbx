@@ -87,7 +87,7 @@ import { resolveSqlSingleQuoteKeyAction } from "@/lib/sql/sqlQuoteCaret";
 import { formatMongoShellText } from "@/lib/mongo/mongoFormatter";
 import { detectAndFormatElasticsearchRequests } from "@/lib/elasticsearch/elasticsearchFormatter";
 import { useConnectionStore } from "@/stores/connectionStore";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { DEFAULT_EDITOR_SETTINGS, useSettingsStore } from "@/stores/settingsStore";
 import { useTheme } from "@/composables/useTheme";
 import { useToast } from "@/composables/useToast";
 import { buildSelectStarExpansion, selectStarResultColumnsMatch } from "@/lib/sql/sqlCompletion";
@@ -104,6 +104,7 @@ import { createQueryEditorSqlShortcutDomHandler, isCharacterProducingShortcut } 
 import { createQueryEditorReplaceShortcutBindings, createQueryEditorReplaceShortcutHandler, createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { createQueryEditorEscapeHandler } from "@/lib/editor/queryEditorEscape";
 import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignmentExtension } from "@/lib/editor/queryEditorLineNumbers";
+import { createQueryEditorBookmarks, type QueryEditorBookmarks } from "@/lib/editor/codemirrorBookmarks";
 import { keepGuttersAttachedDuringSync } from "@/lib/editor/codemirrorGutterSync";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { createQueryEditorFoldShortcutBindings, foldKeymapWithoutAllBindings } from "@/lib/editor/queryEditorFoldKeymap";
@@ -128,10 +129,11 @@ import { createInsertValueHintsExtension, requestInsertValueHintsRefresh, suppor
 import { createSqlBlockFoldService } from "@/lib/editor/codemirrorSqlBlockFolding";
 import { focusEditorView } from "@/lib/editor/queryEditorFocus";
 import { createSqlUnknownObjectHighlights, refreshSqlUnknownObjectHighlights } from "@/lib/editor/codemirrorSqlUnknownObjectHighlights";
-import { shouldUseQueryEditorLargeDocumentMode, shouldUseQueryEditorLargeDocumentModeForSize } from "@/lib/editor/queryEditorLargeDocument";
+import { shouldParseQueryEditorSyntax, shouldUseQueryEditorLargeDocumentMode, shouldUseQueryEditorLargeDocumentModeForSize } from "@/lib/editor/queryEditorLargeDocument";
 import { startsQueryEditorRectangularSelection } from "@/lib/editor/queryEditorPointerSelection";
 import { LARGE_PASTE_HISTORY_USER_EVENT, normalizeQueryEditorPasteText, recoverableNativePasteSuffix, shouldRecoverLargeTauriPaste } from "@/lib/editor/queryEditorLargePaste";
 
+import { keepQueryEditorPasteCaretOnLastContentLine } from "@/lib/editor/queryEditorClipboardPaste";
 import { computePasteCaretResyncTarget } from "@/lib/editor/queryEditorPasteCaretResync";
 
 import { extendQueryEditorSelection, runQueryEditorAltExtendSelection } from "@/lib/editor/queryEditorExtendSelection";
@@ -139,8 +141,10 @@ import { addNextQueryEditorSelectionOccurrence, selectAllQueryEditorSelectionOcc
 import { selectLineEnds } from "@/lib/editor/selectLineEnds";
 import { scrollEditorLine } from "@/lib/editor/scrollEditorLine";
 import { createQueryEditorStringMouseSelection } from "@/lib/editor/queryEditorStringMouseSelection";
+import { createQueryEditorParenthesisMouseSelection } from "@/lib/editor/queryEditorParenthesisMouseSelection";
 import { createQueryEditorCompletionShortcutBindings } from "@/lib/editor/queryEditorCompletionShortcut";
 import { handleQueryEditorCompletionNavigation } from "@/lib/editor/queryEditorCompletionNavigation";
+import { createQueryEditorLineCommentShortcutBindings } from "@/lib/editor/queryEditorLineComment";
 import { createQueryEditorSelectionCaseShortcutBindings } from "@/lib/editor/queryEditorSelectionCaseShortcut";
 import { createQueryEditorExecutionShortcutBindings, createQueryEditorExecutionShortcutHandler, createQueryEditorPostCompositionKeyGuard } from "@/lib/editor/queryEditorExecutionShortcut";
 import { supportsPlDebugRoutine, supportsQueryEditorBlockComments, supportsSqlInListPaste } from "@/lib/database/databaseFeatureSupport";
@@ -516,6 +520,7 @@ interface EditorGestureEvent extends Event {
 const codeMirrorRuntime = createQueryEditorCodeMirrorRuntime();
 const largeDocumentMode = ref(shouldUseQueryEditorLargeDocumentMode(props.modelValue));
 const boundedEditorAnalysisEnabled = () => largeDocumentMode.value;
+const syntaxParsingEnabled = ref(shouldParseQueryEditorSyntax(props.modelValue.length));
 
 let previewContextRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let editorIsActive = true;
@@ -609,6 +614,7 @@ const zoomCommitScheduler = createEditorZoomCommitScheduler((fontSize) => {
   settingsStore.updateEditorSettings({ fontSize });
 });
 const wheelZoom = createEditorWheelZoomController();
+const EDITOR_ZOOM_TOAST_MS = 1500;
 
 const queryEditorAppearanceSettings = computed(() => {
   const settings = settingsStore.editorSettings;
@@ -683,6 +689,7 @@ function applyLiveFontSize(size: number) {
   // frame so that CSS variable changes remain smooth on every wheel tick,
   // while the CodeMirror measure → syncGutters path keeps gutters aligned.
   scheduleFontThemeReconfig(next, settingsStore.editorSettings.fontFamily);
+  toast(`${Math.round((next / DEFAULT_EDITOR_SETTINGS.fontSize) * 100)}%`, EDITOR_ZOOM_TOAST_MS);
 }
 
 function scheduleFontSizeCommit(size: number) {
@@ -995,6 +1002,7 @@ function syncContextMenuStateAtEvent(currentView: EditorViewType, event: MouseEv
 function focusEditor() {
   view.value?.focus();
   rememberFocusedQueryEditorView(view.value);
+  return !!view.value;
 }
 
 function executeFromContextMenu() {
@@ -1396,13 +1404,15 @@ function runSqlShortcutAction(action: ReturnType<typeof enabledSqlShortcutAction
   } else {
     const line = currentView.state.doc.lineAt(head);
     const localHead = Math.min(Math.max(0, head - line.from), line.text.length);
-    selected = resolveSqlShortcutTableToken(line.text, { from: localHead, to: localHead, empty: true, head: localHead });
+    selected = resolveSqlShortcutTableToken(line.text, { from: localHead, to: localHead, empty: true, head: localHead }, resolveSqlDialectId(sqlCompletionDialectOptions()));
   }
   if (!selected) return false;
   const sql = buildSqlShortcutExecutionSql(action, selected, props.databaseType);
   emitExecutionRequest(sql);
   return true;
 }
+
+let bookmarkShortcuts: QueryEditorBookmarks | null = null;
 
 function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view"))["keymap"]) {
   const shortcuts = normalizeShortcutSettings(settingsStore.editorSettings.shortcuts);
@@ -1547,10 +1557,17 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.undo, (view) => codeMirrorRuntime.codeMirrorUndo?.(view) ?? false),
         ...binding(shortcuts.redo, (view) => codeMirrorRuntime.codeMirrorRedo?.(view) ?? false),
         ...binding(shortcuts.selectAll, (view) => codeMirrorRuntime.codeMirrorSelectAll?.(view) ?? false),
+        ...binding(shortcuts.convertSelectionToDelimited, () => {
+          openDelimitedListDialog();
+          return true;
+        }),
         ...binding(shortcuts.selectCurrentStatement, selectCurrentStatementFromView),
         ...binding(shortcuts.previousStatement, (currentView) => navigateStatementFromView(currentView, "previous")),
         ...binding(shortcuts.nextStatement, (currentView) => navigateStatementFromView(currentView, "next")),
         ...binding(shortcuts.statementStart, (currentView) => navigateStatementFromView(currentView, "start")),
+        ...binding(shortcuts.toggleBookmark, (currentView) => bookmarkShortcuts?.toggle(currentView) ?? false),
+        ...binding(shortcuts.nextBookmark, (currentView) => bookmarkShortcuts?.next(currentView) ?? false),
+        ...binding(shortcuts.previousBookmark, (currentView) => bookmarkShortcuts?.previous(currentView) ?? false),
         ...binding(shortcuts.extendSelection, extendQueryEditorSelectionForView),
         ...binding(shortcuts.addNextSelectionOccurrence, addNextQueryEditorSelectionOccurrence),
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
@@ -1559,7 +1576,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.lowercaseSelection, () => convertSelectedSqlCase("lower")),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.toggleCaseSelection, () => convertSelectedSqlCase("toggle")),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.convertNamingStyle, () => convertSelectedNamingStyle()),
-        ...binding(shortcuts.toggleLineComment, (view) => codeMirrorRuntime.codeMirrorToggleLineComment?.(view) ?? false),
+        ...createQueryEditorLineCommentShortcutBindings(shortcuts.toggleLineComment, (view) => codeMirrorRuntime.codeMirrorToggleLineComment?.(view) ?? false),
         ...binding(shortcuts.toggleBlockComment, (view) => {
           if (!supportsQueryEditorBlockComments(props.databaseType)) return false;
           return codeMirrorRuntime.codeMirrorToggleBlockComment?.(view) ?? false;
@@ -2142,7 +2159,9 @@ async function flushImeComposition() {
 
 function defaultKeymapExtension() {
   if (!codeMirrorRuntime.editorViewModule || !codeMirrorRuntime.codeMirrorDefaultKeymap || !codeMirrorRuntime.codeMirrorToggleBlockComment) return [];
-  return codeMirrorRuntime.editorViewModule.keymap.of(defaultKeymapForGlobalShortcuts(codeMirrorRuntime.codeMirrorDefaultKeymap, settingsStore.editorSettings.shortcuts).filter((item) => item.run !== codeMirrorRuntime.codeMirrorToggleBlockComment));
+  return codeMirrorRuntime.editorViewModule.keymap.of(
+    defaultKeymapForGlobalShortcuts(codeMirrorRuntime.codeMirrorDefaultKeymap, settingsStore.editorSettings.shortcuts).filter((item) => item.run !== codeMirrorRuntime.codeMirrorToggleBlockComment && item.run !== codeMirrorRuntime.codeMirrorToggleLineComment),
+  );
 }
 
 const codeMirrorLifecycle = useQueryEditorCodeMirror({
@@ -2210,7 +2229,13 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
       executeSqlStatementFromGutter,
       signatureHelpWindowChars: SQL_SIGNATURE_HELP_WINDOW_CHARS,
       boundedAnalysisEnabled: boundedEditorAnalysisEnabled,
+      syntaxParsingEnabled: () => syntaxParsingEnabled.value,
     });
+    const bookmarks = createQueryEditorBookmarks({
+      modules,
+      toggleLabel: () => t("settings.shortcutToggleBookmark"),
+    });
+    bookmarkShortcuts = bookmarks;
     const initialSettings = settingsStore.editorSettings;
     const theme = await loadEditorTheme(initialSettings.theme, editorThemeAppearance(), getCurrentCustomThemeColors(), themePalette.value);
     if (initialSettings.vimModeEnabled) {
@@ -2220,6 +2245,14 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
     const { currentStatementFrameExtension, activeLineHighlighter } = sqlExtensions.createViewDecorations();
     function updateLargeDocumentMode(currentView: EditorViewType) {
       largeDocumentMode.value = shouldUseQueryEditorLargeDocumentModeForSize(currentView.state.doc.length, currentView.state.doc.lines);
+      const parseSyntax = shouldParseQueryEditorSyntax(currentView.state.doc.length);
+      if (parseSyntax === syntaxParsingEnabled.value) return;
+      syntaxParsingEnabled.value = parseSyntax;
+      // An update listener cannot dispatch, so the grammar swap runs right after the current update.
+      queueMicrotask(() => {
+        if (view.value !== currentView || !codeMirrorRuntime.sqlLanguageComp || !codeMirrorRuntime.buildSqlLanguageExtension) return;
+        currentView.dispatch({ effects: codeMirrorRuntime.sqlLanguageComp.reconfigure(codeMirrorRuntime.buildSqlLanguageExtension()) });
+      });
     }
     const editorElement = editorRef.value;
     if (!editorElement) return;
@@ -2228,6 +2261,10 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
       doc: props.modelValue,
       selection: normalizedEditorSelection(props.initialSelection, props.modelValue.length),
       extensions: [
+        EditorState.transactionFilter.of((transaction) => {
+          if (props.hideExecutionControls || settingsStore.editorSettings.executeMode !== "current" || queryEditorSelectionLanguage() !== "sql" || !supportsExecutionTargetPicker(props.databaseType)) return transaction;
+          return keepQueryEditorPasteCaretOnLastContentLine(transaction);
+        }),
         cmSearch({
           top: true,
           createPanel: () => {
@@ -2246,6 +2283,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         statementBoundariesTrackingPlugin,
         createQueryEditorNativeSelectionGuard(ViewPlugin, { enabled: isTauriRuntime() && isMacOS(), inputHandler: EditorView.inputHandler, finalizeClipboardText: (text) => clipboardLineEndings(text) }),
         initializedRuntime.runGutterComp.of(runStatementGutterExtension()),
+        bookmarks.extension,
         initializedRuntime.lineNumbersComp.of(lineNumbersExtension(initialSettings.showLineNumbers)),
         createQueryEditorLineNumberAlignmentExtension(ViewPlugin),
         currentStatementFrameExtension,
@@ -2280,6 +2318,16 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
               language: queryEditorSelectionLanguage(),
               composing: isEditorComposing(currentView),
               selectStringContent: settingsStore.editorSettings.doubleClickStringSelectionMode !== "word",
+            }),
+          ),
+        ),
+        Prec.highest(
+          EditorView.mouseSelectionStyle.of((currentView, event) =>
+            createQueryEditorParenthesisMouseSelection(currentView, event, {
+              databaseType: props.databaseType,
+              dialect: sqlBehaviorDialect(),
+              language: queryEditorSelectionLanguage(),
+              composing: isEditorComposing(currentView),
             }),
           ),
         ),
@@ -2784,7 +2832,7 @@ watch([() => props.clientSessionId, () => props.completionContextVersion], () =>
 });
 
 watch(
-  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode],
+  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode, () => JSON.stringify(sqlStatementParameterOptions())],
   () => {
     completion.invalidateRequests();
     refreshCompletionCache();
@@ -2799,6 +2847,7 @@ watch(
         codeMirrorRuntime.sqlLanguageComp.reconfigure(codeMirrorRuntime.buildSqlLanguageExtension()),
         codeMirrorRuntime.sqlSemanticHighlightComp.reconfigure(codeMirrorRuntime.buildSqlSemanticHighlightExtension()),
         codeMirrorRuntime.sqlSignatureComp.reconfigure(codeMirrorRuntime.buildSqlSignatureExtension()),
+        refreshSqlUnknownObjectHighlights.of(null),
       ],
     });
     applyEditorCompletionExtension();
@@ -3044,11 +3093,17 @@ onDeactivated(pauseQueryEditorBackgroundWork);
 
 onMounted(() => {
   if (typeof window === "undefined") return;
+  window.addEventListener("keydown", wheelZoom.recordModifiers, true);
+  window.addEventListener("keyup", wheelZoom.recordModifiers, true);
+  window.addEventListener("blur", wheelZoom.reset);
   documentState.attach();
   warmActiveTabConnection();
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", wheelZoom.recordModifiers, true);
+  window.removeEventListener("keyup", wheelZoom.recordModifiers, true);
+  window.removeEventListener("blur", wheelZoom.reset);
   pauseQueryEditorBackgroundWork();
   documentState.dispose();
   pointerInteractions.dispose();
@@ -3136,6 +3191,14 @@ function toggleFold(): boolean {
   return codeMirrorRuntime.codeMirrorToggleFold?.(view.value) ?? false;
 }
 
+function toggleLineComment(): boolean {
+  const currentView = view.value;
+  if (!currentView || props.readOnly) return false;
+  const handled = codeMirrorRuntime.codeMirrorToggleLineComment?.(currentView) ?? false;
+  if (handled) currentView.focus();
+  return handled;
+}
+
 function foldAllForView(currentView: EditorViewType): boolean {
   const command = codeMirrorRuntime.codeMirrorFoldAll;
   if (!command) return false;
@@ -3170,6 +3233,7 @@ function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: Editor
 }
 
 defineExpose({
+  focusEditor,
   openSearch,
   openReplace,
   scrollCursorIntoView,
@@ -3188,6 +3252,7 @@ defineExpose({
   previewStatementRange,
   refreshCompletionCache,
   toggleFold,
+  toggleLineComment,
   foldAll,
   unfoldAll,
 });
