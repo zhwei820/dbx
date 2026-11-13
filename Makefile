@@ -11,7 +11,7 @@ ifeq ($(TAURI_SIGNING_PRIVATE_KEY),)
 TAURI_BUILD_FLAGS ?= --config '{"bundle":{"createUpdaterArtifacts":false}}'
 endif
 
-.PHONY: help install docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean sweep docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
+.PHONY: help install install-local-plugins docs-install check-tauri-dev-port dev dev-fast dev-web dev-backend build package reinstall clean sweep docs docs-build check test cargo-check-fast cargo-test-fast db db-list db-verify db-down db-reset db-check db-completion
 
 export DB
 export DB_VERSION
@@ -27,8 +27,26 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 docs/node_modules/.modules.yaml: docs/package.json docs/pnpm-lock.yaml docs/pnpm-workspace.yaml $(wildcard docs/patches/*.patch)
 	cd docs && $(PNPM) install --frozen-lockfile
 
-install: ## Install root project dependencies
+# Plugin projects packaged and installed into the local DBX plugin store by `make install`; missing dirs are skipped.
+LOCAL_PLUGINS ?= $(HOME)/terminal-emulator
+# Must match the app's plugin store (DBX_DATA_DIR, or a store dir set in DBX settings overrides the default).
+DBX_PLUGINS_DIR ?= $(if $(DBX_DATA_DIR),$(DBX_DATA_DIR),$(HOME)/Library/Application Support/com.dbx.app)/plugins
+DBX_APP_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+
+install: ## Install root project dependencies and local plugins (LOCAL_PLUGINS)
 	$(PNPM) install --frozen-lockfile
+	@$(MAKE) --no-print-directory install-local-plugins
+
+install-local-plugins: ## Package and install LOCAL_PLUGINS into the local DBX plugin store
+	@set -e; for dir in $(LOCAL_PLUGINS); do \
+		if [ ! -f "$$dir/manifest.json" ]; then echo "Skipping local plugin $$dir (no manifest.json)"; continue; fi; \
+		out="target/local-plugins/$$(basename "$$dir")"; \
+		rm -rf "$$out"; \
+		node packages/plugin-cli/bin/dbx-plugin.js package "$$dir" --output-dir "$$out"; \
+		for pkg in "$$out"/*.dbxp; do \
+			cargo run -q -p dbx-core --example install_plugin -- "$(DBX_PLUGINS_DIR)" "$$pkg" "$(DBX_APP_VERSION)"; \
+		done; \
+	done
 
 docs-install: ## Install documentation site dependencies
 	cd docs && $(PNPM) install --frozen-lockfile

@@ -263,7 +263,9 @@ function recordChange(change: SpreadsheetChange) {
 let editQueue: Promise<void> = Promise.resolve();
 
 function runEdit(task: () => Promise<void>) {
-  editQueue = editQueue.then(task).catch((e: any) => toast(t("spreadsheet.editFailed", { message: e?.message || String(e) }), 5000));
+  editQueue = editQueue.then(task).catch((e: any) => {
+    toast(t("spreadsheet.editFailed", { message: e?.message || String(e) }), 5000);
+  });
 }
 
 // RevoGrid writes edits straight into the records, so old values are captured before it does and recorded after.
